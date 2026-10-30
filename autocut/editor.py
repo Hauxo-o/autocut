@@ -1683,9 +1683,9 @@ class EditorPage(QWidget):
             QMessageBox.information(self.win, tr("ed.export"), tr("ed.export.empty"))
             return
         self.preview.pause()
-        d = self._default_dir()
-        path, _ = QFileDialog.getSaveFileName(self.win, tr("ed.export.title"), unique_path(d, tr("ed.project.name"), ".mp4"),
-                                              "MP4 (*.mp4)")
+        d = os.path.dirname(self.project.path) if self.project.path else self._default_dir()     # dossier du projet ouvert
+        path, _ = QFileDialog.getSaveFileName(self.win, tr("ed.export.title"),
+                                              unique_path(d, self.project.name or tr("ed.project.name"), ".mp4"), "MP4 (*.mp4)")
         if not path:
             return
         self.worker = RenderWorker(self.project, path)
