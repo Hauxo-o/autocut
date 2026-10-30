@@ -1,0 +1,23 @@
+# Fichiers generes ou volumineux : ne vont pas sur GitHub
+dist/
+dist_new/
+build/
+__pycache__/
+*.pyc
+*.log
+
+# Tes videos / medias (jamais dans le depot)
+*.mp4
+*.mkv
+*.mov
+*.wav
+*.mp3
+*.avi
+
+# Specifique a ton ordinateur
+*.lnk
+.claude/
+.vscode/
+
+# Genere par PyInstaller (contient des chemins de ton PC)
+AutoCut.spec
