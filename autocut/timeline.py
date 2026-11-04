@@ -56,6 +56,7 @@ class TimelineWidget(QWidget):
     viewChanged = Signal()
     cutRequested = Signal(float, object)  # outil ciseaux : instant (s), element clique
     trackToggled = Signal(str, str)      # piste, "solo" | "mute" | "media"
+    editFinished = Signal()              # un deplacement / rognage vient d'etre lache (collage automatique des vides)
 
     def __init__(self, project, parent=None):
         super().__init__(parent)
@@ -838,6 +839,8 @@ class TimelineWidget(QWidget):
             self.update()
         moved = isinstance(d, dict) and d.get("started") and d.get("mode") == "move"
         self._frozen = False
+        if isinstance(d, dict) and d.get("started") and d.get("mode") in ("move", "trim_l", "trim_r"):
+            self._after_gesture = True
         if moved:
             self.project.compact()                       # une piste devenue vide disparait, les autres se renumerotent
             self._layout_key = None
@@ -846,6 +849,9 @@ class TimelineWidget(QWidget):
         elif isinstance(d, dict) and d.get("mode") == "move":
             self._layout_key = None
             self.invalidate()
+        if getattr(self, "_after_gesture", False):
+            self._after_gesture = False
+            self.editFinished.emit()
 
     def leaveEvent(self, e):
         if self.hover_clip is not None:

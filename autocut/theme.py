@@ -374,6 +374,7 @@ QPushButton#primary:disabled {{ background: {t['border']}; border-color: {t['bor
 QPushButton#nav {{ padding: 5px 3px; font-size: 9pt; background: {t['nav']}; border-color: {t['border']}; }}
 QPushButton#nav:hover {{ background: {t['btn_hover']}; }}
 QPushButton#nav:disabled {{ color: {t['disabled']}; }}
+QFrame#taskbar {{ background: {t['header']}; border-top: 2px solid {t['accent']}; }}
 QPushButton#icon {{ padding: 7px 10px; }}
 QPushButton#tool {{ padding: 1px 2px; font-size: 11pt; background: {t['nav']}; border-color: {t['border']}; }}
 QPushButton#tool:hover {{ background: {t['btn_hover']}; }}

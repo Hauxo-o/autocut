@@ -615,6 +615,7 @@ class EditorPage(QWidget):
         self.setAcceptDrops(True)
         self.audio_page = None            # rempli par la fenetre principale
         self._dirty = False               # le montage a change depuis le dernier enregistrement
+        self._clip_buf = []               # presse-papiers du montage : [(clip copie, decalage dans le groupe)]
         self._rev, self._saved_rev = 0, -1
         self._autosave_on = False
         self._build()
@@ -686,6 +687,7 @@ class EditorPage(QWidget):
         self.timeline.selectionChanged.connect(self._on_select)
         self.timeline.clipsChanged.connect(self._changed)
         self.timeline.editStarted.connect(self.push_undo)
+        self.timeline.editFinished.connect(self._edit_finished)
         self.timeline.viewChanged.connect(self._sync_scrollbar)
         bv.addWidget(self.timeline, 1)
         self.hbar = QScrollBar(Qt.Horizontal)
@@ -772,6 +774,17 @@ class EditorPage(QWidget):
         for b in (self.btn_split, self.btn_dup, self.btn_del):
             brow.addWidget(b)
         v2.addLayout(brow)
+        crow = QHBoxLayout()
+        self.btn_copy = r(QPushButton(), "ed.copy")
+        self.btn_cutclip = r(QPushButton(), "ed.cutclip")
+        self.btn_paste = r(QPushButton(), "ed.paste")
+        r(self.btn_paste, "tip.paste", "setToolTip")
+        self.btn_copy.clicked.connect(self.copy_selected)
+        self.btn_cutclip.clicked.connect(self.cut_selected)
+        self.btn_paste.clicked.connect(self.paste_clips)
+        for b in (self.btn_copy, self.btn_cutclip, self.btn_paste):
+            crow.addWidget(b)
+        v2.addLayout(crow)
         self.btn_unlink = r(QPushButton(), "ed.unlink")
         r(self.btn_unlink, "tip.unlink", "setToolTip")
         self.btn_unlink.clicked.connect(self.unlink_selected)
@@ -880,6 +893,8 @@ class EditorPage(QWidget):
                         (Qt.Key_M, self.btn_magnet.toggle), (Qt.Key_L, self.btn_all.toggle),
                         (Qt.Key_Q, lambda: self.trim_to_playhead("l")), (Qt.Key_W, lambda: self.trim_to_playhead("r")),
                         ("Shift+Delete", self.ripple_delete), (Qt.Key_Z, self.fit_selection),
+                        ("Ctrl+C", self.copy_selected), ("Ctrl+X", self.cut_selected), ("Ctrl+V", self.paste_clips),
+                        (Qt.Key_R, self.btn_ripple.toggle), (Qt.Key_G, self.close_gaps),
                         (Qt.Key_PageUp, lambda: self.goto_edge(-1)), (Qt.Key_PageDown, lambda: self.goto_edge(1))):
             QShortcut(QKeySequence(key), self, activated=fn, context=Qt.WidgetWithChildrenShortcut)
         self._update_play_text()
@@ -917,6 +932,9 @@ class EditorPage(QWidget):
         tool("⇥", "tool.trim_r", "tip.trim_r", lambda: self.trim_to_playhead("r"))
         tool("⌫", "tool.ripple", "tip.ripple", self.ripple_delete)
         tool("⤢", "tool.fit", "tip.fit", self.fit_selection)
+        self.btn_ripple = tool("⇌", "tool.ripple_mode", "tip.ripple_mode", None, True)
+        self.btn_ripple.toggled.connect(self._set_ripple)
+        tool("⊟", "tool.closegaps", "tip.closegaps", self.close_gaps)
         row.addSpacing(4)
         tool("⏮", "tool.prev", "tip.prev", lambda: self.goto_edge(-1))
         tool("⏭", "tool.next", "tip.next", lambda: self.goto_edge(1))
@@ -938,7 +956,11 @@ class EditorPage(QWidget):
         """Retrouve les outils comme on les avait laisses (aimant, toutes les pistes, outil actif)."""
         self.btn_magnet.setChecked(settings.get("tool_magnet"))
         self.btn_all.setChecked(settings.get("tool_linked"))
+        self.btn_ripple.setChecked(settings.get("tool_ripple"))
         self.set_tool("cut" if settings.get("tool_active") == "cut" else "select")
+
+    def _set_ripple(self, on):
+        settings.put("tool_ripple", bool(on))
 
     def _set_magnet(self, on):
         self.timeline.magnet = on
@@ -1268,6 +1290,9 @@ class EditorPage(QWidget):
     def delete_selected(self):
         if self.sel is None:
             return
+        if self.btn_ripple.isChecked():                  # collage automatique : on ne laisse pas de trou
+            self.ripple_delete()
+            return
         self.push_undo()
         ids = {m.id for m in self.project.group_of(self.sel)}
         self.project.clips = [c for c in self.project.clips if c.id not in ids]
@@ -1275,6 +1300,107 @@ class EditorPage(QWidget):
         self.timeline.selected = None
         self._after_project_change()
         self._load_props()
+
+    # ------------------------------------------------------------ copier / couper / coller, collage automatique
+    def copy_selected(self):
+        """Copie l'element choisi (et ses lies : la video avec ses sons) dans le presse-papiers du montage."""
+        if self.sel is None:
+            return
+        group = self.project.group_of(self.sel)
+        first = min(m.start for m in group)
+        self._clip_buf = [(deepcopy(m), m.start - first) for m in group]
+        self.win.status(tr("ed.copied", n=len(group)))
+
+    def cut_selected(self):
+        """Couper (Ctrl+X) : copie puis supprime ; avec le collage automatique, le trou est bouche."""
+        if self.sel is None:
+            return
+        self.copy_selected()
+        self.delete_selected()
+
+    def paste_clips(self):
+        """Colle a la tete de lecture, sur les memes pistes. Collage automatique : on INSERE (la suite est decalee,
+        pas de chevauchement) ; sinon on pose au premier endroit libre a partir de la tete de lecture."""
+        if not self._clip_buf:
+            self.win.status(tr("ed.paste.empty"))
+            return
+        t = self.preview.t
+        dur = max(off + m.duration for m, off in self._clip_buf)
+        self.push_undo()
+        if self.btn_ripple.isChecked():
+            self._split(t, list(self.project.clips), record=False, min_dur=1e-3)
+            for c in self.project.clips:
+                if c.start >= t - 1e-6:
+                    c.start += dur
+            start = t
+        else:
+            start = self._group_start({m.track for m, _ in self._clip_buf}, t, dur)
+        link = Project.new_link() if len(self._clip_buf) > 1 else ""
+        copies = []
+        for m, off in self._clip_buf:
+            n = deepcopy(m)
+            n.id = Clip("text", "V1", 0, 1).id
+            n.start, n.link, n.origin = start + off, link, ""
+            copies.append(n)
+        self.project.clips.extend(copies)
+        self._select_new(copies[0])
+        self.win.status(tr("ed.pasted", n=len(copies)))
+
+    def close_gaps(self, record=True, leading=True):
+        """Colle les morceaux : supprime les vides ou AUCUNE piste n'a quelque chose (les pistes restent synchro).
+        leading : y compris le vide avant le premier element. Renvoie le nombre de secondes retirees."""
+        iv = sorted((c.start, c.end) for c in self.project.clips)
+        if not iv:
+            return 0.0
+        gaps, cur = [], 0.0
+        for k, (s, e) in enumerate(iv):
+            if s > cur + 1e-4 and (k > 0 or leading):
+                gaps.append((cur, s))
+            cur = max(cur, e)
+        if not gaps:
+            if record:
+                self.win.status(tr("st.gaps.none"))
+            return 0.0
+        if record:
+            self.push_undo()
+        for a, b in sorted(gaps, reverse=True):
+            for c in self.project.clips:
+                if c.start >= b - 1e-6:
+                    c.start = max(0.0, c.start - (b - a))
+        total = sum(b - a for a, b in gaps)
+        self._after_project_change()
+        self._load_props()
+        if record:
+            self.win.status(tr("st.gaps.closed", n=len(gaps), sec=f"{total:.1f}"))
+        return total
+
+    def _edit_finished(self):
+        """Apres un deplacement / rognage a la souris : avec le collage automatique, on referme les vides entre les morceaux."""
+        if self.btn_ripple.isChecked():
+            self.close_gaps(record=False, leading=False)
+
+    def cut_source_ranges(self, path, ranges):
+        """Retire du montage des intervalles (secondes) du FICHIER SOURCE `path` : ils sont traduits en instants du montage
+        grace aux clips de ce fichier, puis retires de toutes les pistes. Renvoie les secondes retirees."""
+        p_abs = os.path.abspath(path)
+        refs = [c for c in self.project.clips if c.kind == "video" and os.path.abspath(c.path) == p_abs] or \
+               [c for c in self.project.clips if c.kind == "audio" and os.path.abspath(c.path) == p_abs]
+        tl = []
+        for c in refs:
+            acc = c.start
+            for s0, e0 in (c.segments or [[c.src_in, c.src_in + c.duration]]):
+                for a, b in ranges:
+                    x0, x1 = max(a, s0), min(b, e0)
+                    if x1 - x0 > 1e-4:
+                        tl.append((acc + x0 - s0, acc + x1 - s0))
+                acc += e0 - s0
+        merged = []
+        for a, b in sorted(tl):
+            if merged and a <= merged[-1][1] + 1e-6:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return self.apply_cut_ranges(merged) if merged else 0.0
 
     def duplicate_selected(self):
         c = self.sel
@@ -1292,6 +1418,7 @@ class EditorPage(QWidget):
             n.id = Clip("text", "V1", 0, 1).id
             n.start = m.start - first + start
             n.link = link
+            n.origin = ""                                # une copie ne disparait pas quand on renvoie les coupes
             copies.append(n)
         self.project.clips.extend(copies)
         self._select_new(copies[group.index(c)])
@@ -1398,7 +1525,8 @@ class EditorPage(QWidget):
         self._pass_rev = self._rev
         self.pass_worker = PassWorker(self.project, out)
         self.pass_worker.progress.connect(lambda p_: (self.bar.setValue(int(p_ * 1000)),
-                                                      self.win.status(tr("st.pass.prep", pct=f"{p_ * 100:.0f}"))))
+                                                      self.win.task_update(p_, tr("st.pass.prep", pct=f"{p_ * 100:.0f}"))))
+        self.win.task_begin(tr("st.pass.prep", pct="0"), cancel=self.pass_worker.stop)
         self.pass_worker.done.connect(self._pass_ready)
         self.pass_worker.failed.connect(self._pass_failed)
         self.bar.setValue(0)
@@ -1407,6 +1535,7 @@ class EditorPage(QWidget):
         self.pass_worker.start()
 
     def _pass_end(self):
+        self.win.task_end()
         self.bar.hide()
         self.btn_pass.setText(tr("ed.pass"))
 
@@ -1694,14 +1823,17 @@ class EditorPage(QWidget):
         self.worker.failed.connect(self._export_failed)
         self.bar.setValue(0)
         self.bar.show()
+        self.win.task_begin(tr("ed.export.progress", pct="0"), cancel=self.worker.stop)
         self.btn_export.setText(tr("btn.cancel"))
         self.worker.start()
 
     def _on_progress(self, p):
         self.bar.setValue(int(p * 1000))
         self.win.status(tr("ed.export.progress", pct=f"{p * 100:.0f}"))
+        self.win.task_update(p, tr("ed.export.progress", pct=f"{p * 100:.0f}"))
 
     def _end_export(self):
+        self.win.task_end()
         self.bar.hide()
         self._r(self.btn_export, "ed.export")
 

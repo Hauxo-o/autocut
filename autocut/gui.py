@@ -10,7 +10,7 @@ from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QInputDialog, QDialog, QFrame, QTextBrowser, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QButtonGroup, QRadioButton, QScrollArea, QSlider, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QButtonGroup, QRadioButton, QProgressBar, QScrollArea, QSlider, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
         self._tr = []
         self._play_txt = None
         self._auto_sent = None
+        self.done = []                       # coupes definitives deja faites (numeros d'image du fichier ouvert)
         self.pass_rev = None                 # not None : l'onglet Couper travaille sur un montage (passe)
         self.mp4_worker = None
 
@@ -542,6 +543,18 @@ class MainWindow(QMainWindow):
         orow.addWidget(self.btn_keep_one)
         v3.addLayout(orow)
 
+        hrow = QHBoxLayout()
+        hrow.addWidget(r(QLabel(), "lbl.hard"))
+        self.btn_hard_one = r(QPushButton(), "btn.hardone")
+        r(self.btn_hard_one, "tip.hardone", "setToolTip")
+        self.btn_hard_all = r(QPushButton(), "btn.hardall")
+        r(self.btn_hard_all, "tip.hardall", "setToolTip")
+        self.btn_hard_one.clicked.connect(lambda: self.cut_definitively("one"))
+        self.btn_hard_all.clicked.connect(lambda: self.cut_definitively("all"))
+        hrow.addWidget(self.btn_hard_one)
+        hrow.addWidget(self.btn_hard_all)
+        v3.addLayout(hrow)
+
         arow = QHBoxLayout()
         arow.addWidget(r(QLabel(), "lbl.allcuts"))
         self.btn_cutall = r(QPushButton(), "btn.cutall")
@@ -647,6 +660,25 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.editor)
         self.stack.addWidget(self.audio)
         rl.addWidget(self.stack, 1)
+        # bandeau d'avancement : visible dans tous les onglets pendant un export / une preparation (annulable)
+        self.task_bar = QFrame()
+        self.task_bar.setObjectName("taskbar")
+        tl_ = QHBoxLayout(self.task_bar)
+        tl_.setContentsMargins(18, 8, 18, 8)
+        tl_.setSpacing(14)
+        self.task_label = QLabel()
+        self.task_label.setMinimumWidth(300)
+        self.task_progress = QProgressBar()
+        self.task_progress.setTextVisible(False)
+        self.task_progress.setFixedHeight(12)
+        self.btn_task_cancel = QPushButton(tr("btn.cancel"))
+        self.btn_task_cancel.clicked.connect(self._task_cancel_clicked)
+        tl_.addWidget(self.task_label)
+        tl_.addWidget(self.task_progress, 1)
+        tl_.addWidget(self.btn_task_cancel)
+        self.task_bar.hide()
+        self._task_cancel = None
+        rl.addWidget(self.task_bar)
         self.setCentralWidget(root)
         self.statusBar().addPermanentWidget(self.lbl_file)
         self.set_panel_visible(settings.get("panel_cut"), "cut", save=False)
@@ -814,12 +846,17 @@ class MainWindow(QMainWindow):
         if i == 2:
             self.audio.refresh()
 
-    def kept_segments(self):
-        """Passages gardes une fois les coupes actives retirees : liste de (image_debut, image_fin)."""
+    def effective_cuts(self, pending=True):
+        """Toutes les coupes qui comptent : celles en attente (rouges) + celles deja faites definitivement."""
+        return (list(self.cuts) if pending else []) + [Cut(a, b, True) for a, b in self.done]
+
+    def kept_segments(self, pending=True):
+        """Passages gardes une fois les coupes actives retirees : liste de (image_debut, image_fin).
+        pending=False : seulement les coupes definitives deja faites."""
         m = self.media
         total, fps = m["total_frames"], float(m["fps"])
         segs, pos = [], 0
-        for a, b in normalize_cuts(self.cuts, total):
+        for a, b in normalize_cuts(self.effective_cuts(pending), total):
             if a > pos:
                 segs.append((pos, a))
             pos = b
@@ -874,13 +911,16 @@ class MainWindow(QMainWindow):
                     pass
             return
         self.mp4_worker = Mp4Worker(self.media, segs, path)
-        self.mp4_worker.progress.connect(lambda p: self.status(tr("st.mp4.progress", pct=f"{p * 100:.0f}")))
+        self.task_begin(tr("st.mp4.progress", pct="0"), cancel=self.mp4_worker.stop)
+        self.mp4_worker.progress.connect(lambda p: (self.status(tr("st.mp4.progress", pct=f"{p * 100:.0f}")),
+                                                    self.task_update(p, tr("st.mp4.progress", pct=f"{p * 100:.0f}"))))
         self.mp4_worker.done.connect(self._mp4_done)
         self.mp4_worker.failed.connect(self._mp4_failed)
         self.btn_mp4.setText(tr("btn.cancel"))
         self.mp4_worker.start()
 
     def _mp4_finished(self):
+        self.task_end()
         self.btn_mp4.setText(tr("btn.mp4"))
 
     def _mp4_done(self, path):
@@ -1017,6 +1057,32 @@ class MainWindow(QMainWindow):
     def status(self, msg):
         self.statusBar().showMessage(msg)
 
+    # ------------------------------------------------------------ bandeau d'avancement (visible partout)
+    def task_begin(self, text, cancel=None, indeterminate=False):
+        self._task_cancel = cancel
+        self.task_label.setText(text)
+        self.task_progress.setRange(0, 0 if indeterminate else 1000)
+        self.task_progress.setValue(0)
+        self.btn_task_cancel.setText(tr("btn.cancel"))
+        self.btn_task_cancel.setVisible(cancel is not None)
+        self.task_bar.show()
+
+    def task_update(self, p=None, text=None):
+        if text is not None:
+            self.task_label.setText(text)
+        if p is not None:
+            if self.task_progress.maximum() == 0:
+                self.task_progress.setRange(0, 1000)
+            self.task_progress.setValue(int(max(0.0, min(1.0, p)) * 1000))
+
+    def task_end(self):
+        self.task_bar.hide()
+        self._task_cancel = None
+
+    def _task_cancel_clicked(self):
+        if self._task_cancel:
+            self._task_cancel()
+
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():
             e.acceptProposedAction()
@@ -1062,26 +1128,69 @@ class MainWindow(QMainWindow):
             self.btn_mp4.setEnabled(True)
 
     def apply_pass(self):
-        """Retire du montage (toutes les pistes, la suite est rapprochee) les silences coupes dans l'onglet Couper."""
-        ed = self.editor
-        if ed._rev != self.pass_rev:
-            QMessageBox.warning(self, tr("ed.pass.title"), tr("pass.stale"))
+        """'Appliquer au montage' : coupe definitivement tous les passages rouges, puis retour dans le Montage."""
+        if self.cut_definitively("all") is not None:
+            self.set_tab(1)
+
+    def _tl(self, frame):
+        """Instant (s) du montage pour un numero d'image du fichier de la passe : on retire ce qui a deja ete coupe avant."""
+        gone = sum(b - a for a, b in self.done if b <= frame)
+        return (frame - gone) / self.fps
+
+    def _ensure_in_editor(self):
+        """La video n'est pas encore dans le montage : on l'y met en entier (moins ce qui est deja coupe definitivement)."""
+        m, ed = self.media, self.editor
+        origin = "cut:" + m["path"]
+        segs = self.kept_segments(pending=False)
+        if not segs:
             return
-        m = self.media
-        fps, total = float(m["fps"]), m["total_frames"]
-        ranges, pos = [], 0
-        for a, b in self.kept_segments():
-            if a > pos:
-                ranges.append((pos / fps, a / fps))
-            pos = max(pos, b)
-        if pos < total:
-            ranges.append((pos / fps, total / fps))
-        if not ranges:
-            self.status(tr("st.pass.none"))
-            return
-        removed = ed.apply_cut_ranges(ranges)
-        self.set_tab(1)
-        self.status(tr("st.pass.applied", n=len(ranges), sec=f"{removed:.1f}"))
+        others = [c for c in ed.project.clips if c.origin != origin]
+        if not others:
+            ed._adopt_format({"width": m["width"], "height": m["height"], "fps": float(m["fps"])})
+        cursor = max((c.end for c in others if c.track.startswith(("V", "A"))), default=0.0)
+        ed.add_clips(make_cut_clips(m, segs, cursor, self.cb_mix.currentData() or 0, origin), replace_origin=origin)
+        self._auto_sent = m["path"]
+
+    def cut_definitively(self, which="all"):
+        """Coupe DEFINITIVEMENT les passages rouges (le choisi, ou tous) dans le montage : ils sont retires de toutes les
+        pistes et la suite est rapprochee. Ils disparaissent de la liste (zone hachuree sur la forme d'onde).
+        Renvoie les secondes retirees, ou None si rien n'a ete fait."""
+        if not self.media:
+            return None
+        if which == "one":
+            idx = [self.sel] if 0 <= self.sel < len(self.cuts) and self.cuts[self.sel].enabled else []
+        else:
+            idx = [i for i, c in enumerate(self.cuts) if c.enabled]
+        if not idx:
+            self.status(tr("st.hard.none"))
+            return None
+        ed, fps = self.editor, self.fps
+        ranges = normalize_cuts([self.cuts[i] for i in idx], self.media["total_frames"])
+        if self.pass_rev is not None:                    # fichier de passe : instants du montage
+            if ed._rev != self.pass_rev:
+                QMessageBox.warning(self, tr("ed.pass.title"), tr("pass.stale"))
+                return None
+            removed = ed.apply_cut_ranges([(self._tl(a), self._tl(b)) for a, b in ranges])
+            self.pass_rev = ed._rev
+        else:                                            # video d'origine : on retire ces passages du clip du montage
+            if not any(c.path and os.path.abspath(c.path) == os.path.abspath(self.media["path"]) for c in ed.project.clips):
+                self._ensure_in_editor()
+            removed = ed.cut_source_ranges(self.media["path"], [(a / fps, b / fps) for a, b in ranges])
+        gone = set(idx)
+        for cuts in self.cuts_by_mode.values():          # la zone n'existe plus, dans les deux modes
+            cuts[:] = [c for c in cuts if not (c in [self.cuts[i] for i in gone] or
+                                                any(c.end > a and c.start < b for a, b in ranges))]
+        self.cuts = self.cuts_by_mode[self.mode]
+        self.done += ranges
+        self.wave.set_done(self.done)
+        for mode in self.undo_stack:                     # une coupe definitive ne s'annule plus depuis cet onglet
+            self.undo_stack[mode].clear()
+            self.redo_stack[mode].clear()
+        self._update_undo_buttons()
+        self.sel = -1
+        self.refresh_all()
+        self.status(tr("st.hard.done", n=len(ranges), sec=f"{removed:.1f}"))
+        return removed
 
     def load(self, path, pass_rev=None):
         try:
@@ -1099,6 +1208,8 @@ class MainWindow(QMainWindow):
         self.media = media
         self.envs.clear()
         self.cuts_by_mode = {"dead": [], "classic": []}
+        self.done = []
+        self.wave.set_done([])
         self.cuts, self.sel, self.preview = [], -1, None
         self.undo_stack = {"dead": [], "classic": []}
         self.redo_stack = {"dead": [], "classic": []}
@@ -1199,9 +1310,19 @@ class MainWindow(QMainWindow):
         if not keep_manual:
             self.cuts_by_mode[self.mode] = detect_cuts(env, self.settings[self.mode], self.media["fps"],
                                                        self.media["total_frames"])
+        self._drop_done_overlap()
         self.cuts = self.cuts_by_mode[self.mode]
         self.sel = -1
         self.refresh_all()
+        if self.pass_rev is not None and not keep_manual:       # passe : on explique ce qu'on voit (ou pourquoi il n'y a rien)
+            self.status(tr("st.pass.ready" if self.cuts else "st.pass.zero"))
+
+    def _drop_done_overlap(self):
+        """Une zone coupee definitivement n'existe plus : la detection ne la propose plus."""
+        if not self.done:
+            return
+        for mode, cuts in self.cuts_by_mode.items():
+            cuts[:] = [c for c in cuts if not any(c.end > a and c.start < b for a, b in self.done)]
 
     # ------------------------------------------------------------ liste des coupes
     def refresh_all(self):
@@ -1246,6 +1367,8 @@ class MainWindow(QMainWindow):
         sel = 0 <= self.sel < len(cuts)
         self._set_on(self.btn_cut_one, sel and cuts[self.sel].enabled)
         self._set_on(self.btn_keep_one, sel and not cuts[self.sel].enabled)
+        self.btn_hard_one.setEnabled(sel and cuts[self.sel].enabled)
+        self.btn_hard_all.setEnabled(any(c.enabled for c in cuts))
 
     def _update_summary(self):
         self._update_action_states()
@@ -1256,8 +1379,12 @@ class MainWindow(QMainWindow):
         if not self.media:
             self.lbl_sum.setText("-")
             return
-        self.lbl_sum.setText(tr("summary", n=len(act), total=len(self.cuts), sec=f"{removed:.1f}",
-                                pct=f"{100 * removed / max(total, 1):.0f}", final=fmt(total - removed)))
+        done_s = sum(b - a for a, b in self.done) / self.fps
+        txt = tr("summary", n=len(act), total=len(self.cuts), sec=f"{removed:.1f}",
+                 pct=f"{100 * removed / max(total, 1):.0f}", final=fmt(total - removed - done_s))
+        if self.done:
+            txt += "\n" + tr("summary.done", n=len(self.done), sec=f"{done_s:.1f}")
+        self.lbl_sum.setText(txt)
 
     def _rebuild_skip(self):
         act = sorted((c.start / self.fps, c.end / self.fps) for c in self.cuts if c.enabled) if self.media else []
@@ -1592,14 +1719,16 @@ class MainWindow(QMainWindow):
                     pass
             return
         self.btn_export.setEnabled(False)
-        w = ExportWorker(self.media, list(self.cuts), mode, path, self.chk_sep.isChecked())
-        w.progress.connect(self.status)
+        w = ExportWorker(self.media, self.effective_cuts(), mode, path, self.chk_sep.isChecked())
+        self.task_begin(tr("task.xml"), indeterminate=True)
+        w.progress.connect(lambda m: (self.status(m), self.task_update(text=m)))
         w.done.connect(self._export_done)
         w.failed.connect(self._export_failed)
         self.workers.append(w)
         w.start()
 
     def _export_done(self, path):
+        self.task_end()
         self.btn_export.setEnabled(True)
         self.status(tr("st.export.done", path=path))
         box = QMessageBox(QMessageBox.Information, tr("dlg.done.title"), tr("dlg.done", path=path),
@@ -1611,6 +1740,7 @@ class MainWindow(QMainWindow):
             os.startfile(os.path.dirname(path))
 
     def _export_failed(self, msg):
+        self.task_end()
         self.btn_export.setEnabled(True)
         self.status(tr("st.export.fail"))
         QMessageBox.critical(self, tr("dlg.exporterr.title"), msg)

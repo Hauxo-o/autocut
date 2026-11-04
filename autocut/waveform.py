@@ -3,7 +3,7 @@ Clic = aller a cet endroit (on peut glisser), molette = zoom, glisser les bords 
 = ajuster son debut / sa fin."""
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from .theme import col
@@ -31,6 +31,7 @@ class WaveformWidget(QWidget):
         self.fps = 60.0
         self.duration = 0.0
         self.cuts = []
+        self.done = []          # zones coupees definitivement (numeros d'image) : dessinees hachurees
         self.sel = -1
         self.threshold = None
         self.playhead = 0.0
@@ -70,6 +71,10 @@ class WaveformWidget(QWidget):
     def set_cuts(self, cuts, sel=-1):
         self.cuts, self.sel = cuts, sel
         self._refresh()
+
+    def set_done(self, ranges):
+        self.done = list(ranges)
+        self.update()
 
     def set_threshold(self, db):
         self.threshold = db
@@ -179,6 +184,13 @@ class WaveformWidget(QWidget):
                 p.fillRect(QRectF(x0 - 2, top, 5, ah), col("handle"))
                 p.fillRect(QRectF(x1 - 2, top, 5, ah), col("handle"))
 
+        for a, b in self.done:                               # coupe definitive : zone sombre hachuree (elle n'existe plus)
+            x0, x1 = self._t2x(a / self.fps), self._t2x(b / self.fps)
+            if x1 < 0 or x0 > w:
+                continue
+            r = QRectF(x0, top, max(1.0, x1 - x0), ah)
+            p.fillRect(r, QColor(0, 0, 0, 175))
+            p.fillRect(r, QBrush(QColor(255, 255, 255, 45), Qt.BDiagPattern))
         self._ruler(p, w)
         x = self._t2x(self.playhead)
         p.setPen(QPen(col("playhead"), 2))

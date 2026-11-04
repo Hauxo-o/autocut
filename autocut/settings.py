@@ -19,6 +19,7 @@ DEFAULTS = {
     "projects_dir": "",     # dossier des projets ("" = Documents/Auto Cut)
     "tool_magnet": True,    # editeur : aimant active
     "tool_linked": True,    # editeur : bouton 'toutes les pistes' active
+    "tool_ripple": False,   # editeur : collage automatique des morceaux (pas de vide)
     "tool_active": "select",  # editeur : outil actif ("select" ou "cut")
 }
 
