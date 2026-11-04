@@ -343,7 +343,7 @@ class MainWindow(QMainWindow):
         self.btn_play.setFixedWidth(130)
         self.btn_play.clicked.connect(self.toggle_play)
         self.pos_slider = QSlider(Qt.Horizontal)
-        self.pos_slider.sliderMoved.connect(lambda v: self.player.setPosition(v))
+        self.pos_slider.sliderMoved.connect(lambda v: self.seek_seconds(self.wave.to_m(v / 1000.0)))
         self.lbl_time = QLabel("0:00.00 / 0:00.00")
         self.lbl_time.setMinimumWidth(130)
         self.lbl_time.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1191,6 +1191,7 @@ class MainWindow(QMainWindow):
         self.cuts = self.cuts_by_mode[self.mode]
         self.done += ranges
         self.wave.set_done(self.done)
+        self.pos_slider.setRange(0, int(self.wave.cdur * 1000))
         for mode in self.undo_stack:                     # une coupe definitive ne s'annule plus depuis cet onglet
             self.undo_stack[mode].clear()
             self.redo_stack[mode].clear()
@@ -1351,7 +1352,8 @@ class MainWindow(QMainWindow):
         chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         chk.setCheckState(Qt.Checked if c.enabled else Qt.Unchecked)
         self.table.setItem(i, 0, chk)
-        vals = [str(i + 1), fmt(c.start / self.fps), fmt(c.end / self.fps), f"{c.frames / self.fps:.2f} s"]
+        vals = [str(i + 1), fmt(self.wave.to_c(c.start / self.fps)), fmt(self.wave.to_c(c.end / self.fps)),
+                f"{c.frames / self.fps:.2f} s"]
         for j, v in enumerate(vals, 1):
             it = QTableWidgetItem(v)
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -1473,15 +1475,15 @@ class MainWindow(QMainWindow):
         if on:
             c = self.cuts[self.sel]
             self._updating = True
-            self.sp_start.setValue(c.start / self.fps)
-            self.sp_end.setValue(c.end / self.fps)
+            self.sp_start.setValue(self.wave.to_c(c.start / self.fps))
+            self.sp_end.setValue(self.wave.to_c(c.end / self.fps))
             self._updating = False
 
     def _spin_edited(self, which, v):
         if self._updating or not (0 <= self.sel < len(self.cuts)):
             return
         c = self.cuts[self.sel]
-        f = int(round(v * self.fps))
+        f = int(round(self.wave.to_m(v, prefer_end=(which == "end")) * self.fps))
         self.push_undo(coalesce=True)
         if which == "start":
             c.start = max(0, min(f, c.end - 1))
@@ -1679,9 +1681,10 @@ class MainWindow(QMainWindow):
         pos = self.player.position() / 1000.0
         playing = self.player.playbackState() == QMediaPlayer.PlayingState
         self.wave.set_playhead(pos, follow=playing)
+        posc = self.wave.to_c(pos)                       # les zones coupees pour de bon n'existent plus : temps sans elles
         if not self.pos_slider.isSliderDown():
-            self.pos_slider.setValue(int(pos * 1000))
-        self.lbl_time.setText(f"{fmt(pos)} / {fmt(self.media['duration'])}")
+            self.pos_slider.setValue(int(posc * 1000))
+        self.lbl_time.setText(f"{fmt(posc)} / {fmt(self.wave.cdur if self.done else self.media['duration'])}")
         self._update_tint(pos)
         txt = tr("btn.pause") if playing else tr("btn.play")
         if txt != self._play_txt:
@@ -1689,6 +1692,10 @@ class MainWindow(QMainWindow):
             self.btn_play.setText(txt)
         if not playing:
             return
+        for a_, b_ in self.wave._done_s:                 # une zone coupee definitivement n'est jamais jouee
+            if a_ - 0.02 <= pos < b_ - 0.03:
+                self.player.setPosition(int(b_ * 1000))
+                return
         pv = self.preview
         if pv:
             if not pv["jumped"] and pos >= pv["from"]:

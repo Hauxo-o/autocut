@@ -31,7 +31,10 @@ class WaveformWidget(QWidget):
         self.fps = 60.0
         self.duration = 0.0
         self.cuts = []
-        self.done = []          # zones coupees definitivement (numeros d'image) : dessinees hachurees
+        self.done = []          # zones coupees definitivement (numeros d'image) : elles n'existent plus a l'ecran
+        self._done_s = []       # les memes, en secondes (triees)
+        self._cenv = None       # enveloppe SANS les zones coupees (c'est elle qu'on dessine)
+        self.cdur = 0.0         # duree restante (sans les zones coupees) : c'est l'axe du temps affiche
         self.sel = -1
         self.threshold = None
         self.playhead = 0.0
@@ -64,6 +67,7 @@ class WaveformWidget(QWidget):
     def set_data(self, env, hop, duration, fps):
         first = self.env is None
         self.env, self.hop, self.duration, self.fps = env, hop, duration, float(fps)
+        self._rebuild_compact()
         if first:
             self.vs, self.vl = 0.0, max(1.0, min(60.0, duration))
         self._refresh()
@@ -73,8 +77,51 @@ class WaveformWidget(QWidget):
         self._refresh()
 
     def set_done(self, ranges):
-        self.done = list(ranges)
-        self.update()
+        """Zones coupees pour de bon : elles disparaissent de la forme d'onde, les deux parties voisines se rejoignent."""
+        self.done = sorted(ranges)
+        self._rebuild_compact()
+        self._clamp_view()
+        self._refresh()
+
+    def _rebuild_compact(self):
+        f = self.fps or 60.0
+        self._done_s = [(a / f, b / f) for a, b in self.done]
+        self.cdur = max(0.0, self.duration - sum(b - a for a, b in self._done_s))
+        if self.env is not None and self._done_s:
+            keep = np.ones(len(self.env), bool)
+            for a, b in self._done_s:
+                keep[int(a / self.hop): int(np.ceil(b / self.hop))] = False
+            self._cenv = self.env[keep]
+        else:
+            self._cenv = self.env
+
+    def to_c(self, t):
+        """Instant du fichier -> instant affiche (sans les zones coupees)."""
+        return t - sum(min(b, t) - a for a, b in self._done_s if a < t)
+
+    def to_m(self, tc, prefer_end=False):
+        """Instant affiche -> instant du fichier. Pile sur une jointure : juste apres la zone coupee
+        (prefer_end=True : juste avant, pour la FIN d'une coupe)."""
+        add = 0.0
+        for a, b in self._done_s:
+            ca = a - add
+            if tc > ca + 1e-9 or (tc >= ca - 1e-9 and not prefer_end):
+                add += b - a
+            else:
+                break
+        return tc + add
+
+    def _bounds(self, i):
+        """Limites en images entre lesquelles les bords de la coupe i peuvent bouger (ni autre coupe, ni zone coupee)."""
+        c = self.cuts[i]
+        lo = self.cuts[i - 1].end if i > 0 else 0
+        hi = self.cuts[i + 1].start if i + 1 < len(self.cuts) else int(self.duration * self.fps)
+        for a, b in self.done:
+            if b <= c.start:
+                lo = max(lo, b)
+            if a >= c.end:
+                hi = min(hi, a)
+        return lo, hi
 
     def set_threshold(self, db):
         self.threshold = db
@@ -83,28 +130,34 @@ class WaveformWidget(QWidget):
     def set_playhead(self, t, follow=False):
         changed = t != self.playhead
         self.playhead = t
-        if follow and self._drag is None and (t < self.vs or t > self.vs + self.vl):
-            self.center_on(t, ratio=0.1)
+        tc = self.to_c(t)
+        if follow and self._drag is None and (tc < self.vs or tc > self.vs + self.vl):
+            self._center_c(tc, ratio=0.1)
         elif changed:
             self._refresh()
 
     # ---------- vue (zoom / deplacement)
     def _clamp_view(self):
-        self.vl = min(max(MIN_VIEW, self.vl), max(MIN_VIEW, self.duration))
-        self.vs = min(max(0.0, self.vs), max(0.0, self.duration - self.vl))
+        self.vl = min(max(MIN_VIEW, self.vl), max(MIN_VIEW, self.cdur))
+        self.vs = min(max(0.0, self.vs), max(0.0, self.cdur - self.vl))
 
-    def center_on(self, t, ratio=0.5):
-        self.vs = t - ratio * self.vl
+    def _center_c(self, tc, ratio=0.5):
+        """Centre la vue sur un instant AFFICHE (sans les zones coupees)."""
+        self.vs = tc - ratio * self.vl
         self._clamp_view()
         self._refresh()
 
+    def center_on(self, t, ratio=0.5):
+        self._center_c(self.to_c(t), ratio)
+
     def ensure_visible(self, a, b):
+        a, b = self.to_c(a), self.to_c(b)
         if a < self.vs or b > self.vs + self.vl:
-            self.center_on((a + b) / 2)
+            self._center_c((a + b) / 2)
 
     def zoom(self, factor, center_t=None):
         """factor < 1 : zoom avant ; factor > 1 : zoom arriere."""
-        t = self.playhead if center_t is None else center_t
+        t = self.to_c(self.playhead if center_t is None else center_t)
         ratio = (t - self.vs) / self.vl if self.vs <= t <= self.vs + self.vl else 0.5
         self.vl *= factor
         self.vs = t - ratio * self.vl
@@ -112,10 +165,11 @@ class WaveformWidget(QWidget):
         self._refresh()
 
     def show_all(self):
-        self.vs, self.vl = 0.0, max(MIN_VIEW, self.duration)
+        self.vs, self.vl = 0.0, max(MIN_VIEW, self.cdur)
         self._refresh()
 
     def show_range(self, a, b, margin=1.0):
+        a, b = self.to_c(a), self.to_c(b)
         self.vl = max(2.0, (b - a) + 2 * margin)
         self.vs = (a + b) / 2 - self.vl / 2
         self._clamp_view()
@@ -129,10 +183,10 @@ class WaveformWidget(QWidget):
 
     # ---------- conversions
     def _t2x(self, t):
-        return (t - self.vs) / self.vl * self.width()
+        return (self.to_c(t) - self.vs) / self.vl * self.width()
 
-    def _x2t(self, x):
-        return self.vs + x / max(1, self.width()) * self.vl
+    def _x2t(self, x, prefer_end=False):
+        return self.to_m(self.vs + x / max(1, self.width()) * self.vl, prefer_end)
 
     def _amp(self, db, half):
         return float(np.clip((db - DB_FLOOR) / -DB_FLOOR, 0, 1)) * half
@@ -145,10 +199,11 @@ class WaveformWidget(QWidget):
         top, ah = RULER_H, h - RULER_H
         cy, half = top + ah / 2, ah / 2 - 3
 
-        if self.env is not None and len(self.env):
+        env = self._cenv
+        if env is not None and len(env):
             i0 = max(0, int(self.vs / self.hop))
-            i1 = min(len(self.env), int((self.vs + self.vl) / self.hop) + 1)
-            seg = self.env[i0:i1]
+            i1 = min(len(env), int((self.vs + self.vl) / self.hop) + 1)
+            seg = env[i0:i1]
             if len(seg):
                 if len(seg) > w:
                     idx = np.linspace(0, len(seg), w, endpoint=False).astype(int)
@@ -184,13 +239,6 @@ class WaveformWidget(QWidget):
                 p.fillRect(QRectF(x0 - 2, top, 5, ah), col("handle"))
                 p.fillRect(QRectF(x1 - 2, top, 5, ah), col("handle"))
 
-        for a, b in self.done:                               # coupe definitive : zone sombre hachuree (elle n'existe plus)
-            x0, x1 = self._t2x(a / self.fps), self._t2x(b / self.fps)
-            if x1 < 0 or x0 > w:
-                continue
-            r = QRectF(x0, top, max(1.0, x1 - x0), ah)
-            p.fillRect(r, QColor(0, 0, 0, 175))
-            p.fillRect(r, QBrush(QColor(255, 255, 255, 45), Qt.BDiagPattern))
         self._ruler(p, w)
         x = self._t2x(self.playhead)
         p.setPen(QPen(col("playhead"), 2))
@@ -254,12 +302,11 @@ class WaveformWidget(QWidget):
             return
         which, i = self._drag
         c = self.cuts[i]
-        f = int(round(self._x2t(x) * self.fps))
+        f = int(round(self._x2t(x, prefer_end=(which == "end")) * self.fps))
+        lo, hi = self._bounds(i)
         if which == "start":
-            lo = self.cuts[i - 1].end if i > 0 else 0
             c.start = max(lo, min(f, c.end - 1))
         else:
-            hi = self.cuts[i + 1].start if i + 1 < len(self.cuts) else int(self.duration * self.fps)
             c.end = min(hi, max(f, c.start + 1))
         self._refresh()
         self.cutEdited.emit(i)
@@ -296,38 +343,42 @@ class OverviewWidget(QWidget):
         self._drag = None
         wave.viewChanged.connect(self.update)
 
-    def _t(self, x):
-        return x / max(1, self.width()) * max(self.wave.duration, 0.001)
+    def _t(self, x):                       # instants AFFICHES (sans les zones coupees definitivement)
+        return x / max(1, self.width()) * max(self.wave.cdur, 0.001)
 
     def _x(self, t):
-        return t / max(self.wave.duration, 0.001) * self.width()
+        return t / max(self.wave.cdur, 0.001) * self.width()
+
+    def _xm(self, t):                      # instant du fichier -> position
+        return self._x(self.wave.to_c(t))
 
     def paintEvent(self, _):
         wv = self.wave
         p = QPainter(self)
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, col("wave_bg"))
-        if wv.env is not None and len(wv.env) and w > 4:
-            idx = np.linspace(0, len(wv.env), w, endpoint=False).astype(int)
-            cols = np.maximum.reduceat(wv.env, idx)
+        env = wv._cenv
+        if env is not None and len(env) and w > 4:
+            idx = np.linspace(0, len(env), w, endpoint=False).astype(int)
+            cols = np.maximum.reduceat(env, idx)
             amps = np.clip((cols - DB_FLOOR) / -DB_FLOOR, 0, 1) * (h / 2 - 3)
             p.setPen(QPen(col("wave_dim"), 1))
             for x, a in enumerate(amps):
                 p.drawLine(x, int(h / 2 - a), x, int(h / 2 + a))
         for c in wv.cuts:
-            x0, x1 = self._x(c.start / wv.fps), self._x(c.end / wv.fps)
+            x0, x1 = self._xm(c.start / wv.fps), self._xm(c.end / wv.fps)
             p.fillRect(QRectF(x0, 0, max(1.5, x1 - x0), h),
                        col("cut", 150) if c.enabled else col("muted", 60))
         if 0 <= wv.sel < len(wv.cuts):
             c = wv.cuts[wv.sel]
             p.setPen(QPen(col("handle"), 1))
-            p.drawRect(QRectF(self._x(c.start / wv.fps), 0, max(2.0, self._x((c.end - c.start) / wv.fps)), h - 1))
+            p.drawRect(QRectF(self._xm(c.start / wv.fps), 0, max(2.0, self._xm(c.end / wv.fps) - self._xm(c.start / wv.fps)), h - 1))
         # la partie visible dans la forme d'onde
         r = QRectF(self._x(wv.vs), 1, max(3.0, self._x(wv.vl)), h - 2)
         p.fillRect(r, col("text", 40))
         p.setPen(QPen(col("text", 200), 1.5))
         p.drawRect(r)
-        x = self._x(wv.playhead)
+        x = self._xm(wv.playhead)
         p.setPen(QPen(col("playhead"), 2))
         p.drawLine(QPointF(x, 0), QPointF(x, h))
 
@@ -351,7 +402,7 @@ class OverviewWidget(QWidget):
         hit = self._hit(x)
         wv = self.wave
         if hit is None:                      # clic en dehors du cadre : on le centre ici, puis on peut glisser
-            wv.center_on(self._t(x))
+            wv._center_c(self._t(x))
             hit = "body"
         self._drag = (hit, self._t(x) - wv.vs, wv.vs, wv.vs + wv.vl)
 
