@@ -3,6 +3,9 @@ Les elements lies (une video et ses pistes audio) bougent et se rognent ensemble
 Un clip compose (les passages gardes d'une video) est UN seul element, avec des reperes aux coupes.
 Les pistes n'existent que si elles contiennent quelque chose : on en cree une en deposant un element sur la
 bande "nouvelle piste". Chaque piste a ses boutons Solo / Muet / Miniatures-forme d'onde et sa hauteur."""
+import os
+import time
+
 import numpy as np
 from PySide6.QtCore import QEvent, QLineF, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
@@ -77,6 +80,7 @@ class TimelineWidget(QWidget):
         self._layout_key = None
         self._frozen = False             # pendant qu'on deplace un element, les pistes ne bougent pas
         self.hover_clip = None           # element sous la souris (mis en valeur)
+        self._exists = {}                # chemin -> (le fichier existe, instant de la verification)
         self.snap_t = None               # instant sur lequel l'aimant vient de coller (trait d'accent pendant le glisser)
         self.setMouseTracking(True)
         self.setMinimumHeight(RULER_H + 2 * STRIP_H + 60)
@@ -185,6 +189,17 @@ class TimelineWidget(QWidget):
         x0, x1 = self._t2x(c.start), self._t2x(c.end)
         inset = 3 if r.height() >= 30 else 1
         return QRectF(x0, r.top() + inset, max(2.0, x1 - x0), r.height() - 2 * inset)
+
+    def missing(self, c):
+        """Le fichier de cet element n'existe plus (deplace / supprime) ? Verifie au plus toutes les 4 s par fichier."""
+        if not c.path:
+            return False
+        now = time.monotonic()
+        ok, t = self._exists.get(c.path, (True, -99.0))
+        if now - t > 4.0:
+            ok = os.path.isfile(c.path)
+            self._exists[c.path] = (ok, now)
+        return not ok
 
     def _clip_at(self, x, y):
         if x < LABEL_W:
@@ -397,6 +412,9 @@ class TimelineWidget(QWidget):
             if r.right() < LABEL_W or r.left() > w or r.bottom() < RULER_H or r.top() > h:
                 continue
             base = clip_color(c)
+            lost = self.missing(c)
+            if lost:
+                base = QColor("#8a3a36")
             active = self.project.track_active(c.track)
             p.setOpacity(1.0 if active else 0.35)
             if c is self.selected:
@@ -414,7 +432,7 @@ class TimelineWidget(QWidget):
             p.setBrush(g)
             p.drawRoundedRect(r, 6, 6)
             p.setRenderHint(QPainter.Antialiasing, False)
-            media = self.project.track_media.get(c.track, True) and r.height() >= 24
+            media = self.project.track_media.get(c.track, True) and r.height() >= 24 and not lost
             shown = False
             if media:
                 shown = self._paint_media(p, c, r, base, w)
@@ -434,7 +452,7 @@ class TimelineWidget(QWidget):
             if r.width() > 24 and r.height() >= 13:
                 p.save()
                 p.setClipRect(r.adjusted(4, 0, -4, 0).intersected(QRectF(LABEL_W, 0, w, h)))
-                icon = {"video": "▶ ", "image": "▣ ", "text": "T ", "audio": "♪ "}[c.kind]
+                icon = "⚠ " if lost else {"video": "▶ ", "image": "▣ ", "text": "T ", "audio": "♪ "}[c.kind]
                 extra = f"  ({len(c.segments)} ✂)" if len(c.segments) > 1 else ""
                 text = icon + c.label() + extra
                 tr_ = r.adjusted(7, 0, -4, 0)

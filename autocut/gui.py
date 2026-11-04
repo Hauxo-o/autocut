@@ -962,7 +962,11 @@ class MainWindow(QMainWindow):
     def show_welcome(self):
         """Ecran d'accueil : creer un projet (avec son nom), ou rouvrir un projet existant."""
         d = WelcomeDialog(self)
-        if not d.exec() or not d.choice:
+        res = d.exec()
+        p = self.editor.project
+        if p.path and not os.path.isfile(p.path):         # le projet ouvert vient d'etre supprime depuis l'accueil
+            p.path = ""
+        if not res or not d.choice:
             return False
         if d.choice[0] == "create":
             return self.create_project(d.choice[1], d.choice[2])
@@ -1001,6 +1005,10 @@ class MainWindow(QMainWindow):
         p = ed.project
         if p.path != path:                               # le fichier n'a pas pu etre lu
             return False
+        missing = projects.missing_files(path)
+        if missing:                                      # on le dit clairement (le projet s'ouvre quand meme)
+            names = "\n".join("• " + f for f in missing[:8]) + ("\n…" if len(missing) > 8 else "")
+            QMessageBox.warning(self, tr("home.missing.title"), tr("home.missing.open", n=len(missing), names=names))
         if p.source and os.path.isfile(p.source):
             self.load(p.source)
         self._update_title()

@@ -7,7 +7,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractButton, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from . import i18n, projects, settings, theme
@@ -435,20 +435,39 @@ class WelcomeDialog(QDialog):
             it.setData(Qt.UserRole, info["path"])
             it.setToolTip(info["path"])
             w = QWidget()
-            w.setAttribute(Qt.WA_TransparentForMouseEvents)
-            lay = QVBoxLayout(w)
-            lay.setContentsMargins(14, 10, 14, 10)
+            row = QHBoxLayout(w)
+            row.setContentsMargins(14, 10, 10, 10)
+            row.setSpacing(8)
+            lay = QVBoxLayout()
             lay.setSpacing(2)
             name = QLabel(info["name"])
             name.setFont(_font(12, True))
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(info["mtime"]))
-            meta = tr("home.meta", when=when, n=info["n_clips"])
+            meta = tr("home.meta", when=when, n=info["n_clips"]) if info["n_clips"] else when + "   ·   " + tr("home.empty")
             if info["source"]:
                 meta += "   ·   🎬 " + os.path.basename(info["source"])
             sub = QLabel(meta)
             sub.setObjectName("muted")
             lay.addWidget(name)
             lay.addWidget(sub)
+            if info["missing"]:                                 # fichiers qui n'existent plus : bien visible
+                names = ", ".join(os.path.basename(f) for f in info["missing"][:2]) + (" …" if len(info["missing"]) > 2 else "")
+                warn = QLabel(tr("home.missing", n=len(info["missing"]), names=names))
+                warn.setStyleSheet("color: #ff6b5e; font-weight: 600;")
+                warn.setToolTip("\n".join(info["missing"]))
+                lay.addWidget(warn)
+            row.addLayout(lay, 1)
+            for glyph, tip, fn in (("⧉", "home.duplicate", lambda _=False, p=info["path"]: self._duplicate(p)),
+                                   ("🗑", "home.delete", lambda _=False, p=info["path"]: self._delete(p))):
+                b_ = QPushButton(glyph)
+                b_.setObjectName("tool")
+                b_.setFixedSize(34, 30)
+                b_.setToolTip(tr(tip))
+                b_.setCursor(Qt.PointingHandCursor)
+                b_.clicked.connect(fn)
+                row.addWidget(b_, 0, Qt.AlignVCenter)
+            if info["missing"]:
+                w.setStyleSheet("")
             it.setSizeHint(w.sizeHint() + QSize(0, 6))
             self.lst.addItem(it)
             self.lst.setItemWidget(it, w)
@@ -468,13 +487,60 @@ class WelcomeDialog(QDialog):
             return
         m = QMenu(self)
         a_open = m.addAction(tr("home.open"))
+        a_dup = m.addAction(tr("home.duplicate"))
+        a_del = m.addAction(tr("home.delete"))
         a_dir = m.addAction(tr("home.folder"))
         act = m.exec(self.lst.viewport().mapToGlobal(pos))
         path = it.data(Qt.UserRole)
         if act is a_open:
             self._done(("open", path))
+        elif act is a_dup:
+            self._duplicate(path)
+        elif act is a_del:
+            self._delete(path)
         elif act is a_dir and hasattr(os, "startfile"):
             os.startfile(os.path.dirname(path))
+
+    def keyPressEvent(self, e):
+        it = self.lst.currentItem()
+        if e.key() == Qt.Key_Delete and it is not None and it.data(Qt.UserRole):
+            self._delete(it.data(Qt.UserRole))
+            return
+        super().keyPressEvent(e)
+
+    def _confirm_delete(self, name):
+        box = QMessageBox(QMessageBox.Warning, tr("home.delete"), tr("home.delete.ask", name=name), QMessageBox.NoButton, self)
+        yes = box.addButton(tr("btn.delete"), QMessageBox.DestructiveRole)
+        box.addButton(tr("btn.cancel"), QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def _delete(self, path):
+        info = projects.read_info(path)
+        name = info["name"] if info else os.path.basename(path)
+        if not self._confirm_delete(name):
+            return
+        if not projects.delete(settings.projects_root(), path):
+            QMessageBox.warning(self, tr("home.delete"), tr("home.delete.fail"))
+        self._fill()
+
+    def _duplicate(self, path):
+        root = settings.projects_root()
+        info = projects.read_info(path)
+        base = (info["name"] if info else os.path.basename(path)) + " " + tr("home.copy.suffix")
+        name, ok = QInputDialog.getText(self, tr("home.duplicate"), tr("np.name"), text=projects.unique_name(root, base))
+        name = name.strip()
+        if not ok or not name:
+            return
+        if projects.exists(root, name):
+            QMessageBox.warning(self, tr("home.duplicate"), tr("np.exists", name=name))
+            return
+        try:
+            projects.duplicate(root, path, name)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, tr("home.duplicate"), str(e))
+            return
+        self._fill()
 
     def _new(self, video=""):
         d = NewProjectDialog(self, video=video if isinstance(video, str) else "")

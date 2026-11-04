@@ -1685,6 +1685,15 @@ class EditorPage(QWidget):
             return
         if self._rev == self._saved_rev and not force:
             return
+        if self.project.path:                                # projet nomme : on enregistre directement dedans
+            try:
+                self.project.save(self.project.path)
+                self._dirty = False
+                self._saved_rev = self._rev
+                self.clear_autosave()
+            except OSError:
+                pass
+            return
         path = autosave_path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)

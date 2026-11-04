@@ -37,8 +37,11 @@ def read_info(path):
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
+        files = {c.get("path") for c in data.get("clips", []) if c.get("kind") in ("video", "image", "audio") and c.get("path")}
+        files.add(data.get("source", ""))
+        missing = sorted(f for f in files if f and not os.path.isfile(f))          # fichiers qui n'existent plus
         return dict(name=data.get("name") or os.path.basename(path)[:-len(EXT)], path=path, source=data.get("source", ""),
-                    n_clips=len(data.get("clips", [])), mtime=os.path.getmtime(path))
+                    n_clips=len(data.get("clips", [])), mtime=os.path.getmtime(path), missing=missing)
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -63,3 +66,52 @@ def list_projects(root):
             if info:
                 out.append(info)
     return sorted(out, key=lambda i: i["mtime"], reverse=True)
+
+
+def missing_files(path):
+    """Fichiers (videos, images, sons) cites par un projet et qui n'existent plus sur le disque."""
+    info = read_info(path)
+    return info["missing"] if info else []
+
+
+def duplicate(root, path, new_name):
+    """Copie le projet (son fichier : montage, reglages, video d'origine) sous un autre nom, dans son propre dossier.
+    Les exports du projet (XML, MP4...) ne sont pas recopies : ils peuvent etre tres gros. Renvoie le nouveau fichier."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    data["name"] = new_name
+    dest = project_file(root, new_name)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    return dest
+
+
+def trash(path):
+    """Envoie un fichier ou un dossier dans la Corbeille de Windows (on peut le retrouver). True si c'est fait."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+    # FO_DELETE, avec FOF_ALLOWUNDO (Corbeille) + sans fenetre de confirmation (on a deja demande)
+    op = SHFILEOPSTRUCTW(None, 3, os.path.abspath(path) + "\0", None, 0x40 | 0x10 | 0x4 | 0x400, False, None, None)
+    return ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op)) == 0 and not op.fAnyOperationsAborted
+
+
+def delete(root, path, trasher=None):
+    """Supprime un projet : son dossier (fichier de projet + exports) part dans la Corbeille. Les videos d'origine ne sont
+    jamais touchees (elles ne sont pas dans le dossier du projet). Ancien dossier commun 'Montage' : seulement le fichier.
+    Refuse tout ce qui est hors du dossier des projets. Renvoie True si c'est fait."""
+    trasher = trasher or trash
+    root, path = os.path.abspath(root), os.path.abspath(path)
+    folder = os.path.dirname(path)
+    inside = os.path.commonpath([root, folder]) == root
+    if not inside or not path.endswith(EXT) or not os.path.isfile(path):
+        return False
+    target = path if (os.path.basename(folder) == "Montage" or folder == root) else folder
+    return bool(trasher(target))
