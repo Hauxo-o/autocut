@@ -6,7 +6,7 @@ import time
 from copy import deepcopy
 
 from PySide6.QtCore import QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QValidator
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSlider,
     QVBoxLayout, QWidget,
@@ -114,6 +114,32 @@ class LevelMeter(QWidget):
 
 
 ROLES = ("voice", "game", "music", "none")
+
+
+class NegSpin(QDoubleSpinBox):
+    """Champ de valeur toujours negative (dB / LUFS) : on peut taper "12" ou "-12", ca donne -12."""
+
+    def _num(self, text):
+        t = text.replace(self.suffix(), "").replace(",", ".").strip()
+        return -abs(float(t))
+
+    def valueFromText(self, text):
+        try:
+            return self._num(text)
+        except ValueError:
+            return self.value()
+
+    def validate(self, text, pos):
+        t = text.replace(self.suffix(), "").replace(",", ".").strip()
+        if t in ("", "-", ".", "-."):
+            return QValidator.Intermediate, text, pos
+        try:
+            v = self._num(text)
+        except ValueError:
+            return QValidator.Invalid, text, pos
+        if self.minimum() <= v <= self.maximum():
+            return QValidator.Acceptable, text, pos
+        return QValidator.Intermediate, text, pos
 
 
 class AutoMixWorker(QThread):
@@ -253,7 +279,7 @@ class AudioPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(10)
         self.lbl_target = QLabel()
-        self.sp_lufs = QDoubleSpinBox()
+        self.sp_lufs = NegSpin()
         self.sp_lufs.setRange(-40.0, -5.0)
         self.sp_lufs.setSingleStep(0.5)
         self.sp_lufs.setDecimals(1)
@@ -624,7 +650,7 @@ class AudioPage(QWidget):
         self.mix_lbls, self.mix_spins = {}, {}
         for key, default in (("voice", -16.0), ("game", -24.0), ("music", -30.0)):
             lbl = QLabel()
-            sp = QDoubleSpinBox()
+            sp = NegSpin()
             sp.setRange(-50.0, -6.0)
             sp.setSingleStep(1.0)
             sp.setDecimals(1)
@@ -724,9 +750,9 @@ class AudioPage(QWidget):
         self.chk_duck = QCheckBox()
         self.cb_dsrc = QComboBox()
         self.lbl_dsrc, self.lbl_damt, self.lbl_dthr, self.lbl_drel = QLabel(), QLabel(), QLabel(), QLabel()
-        self.sp_damt = QDoubleSpinBox()
+        self.sp_damt = NegSpin()
         self.sp_damt.setRange(-40.0, -1.0)
-        self.sp_dthr = QDoubleSpinBox()
+        self.sp_dthr = NegSpin()
         self.sp_dthr.setRange(-70.0, -15.0)
         self.sp_drel = QDoubleSpinBox()
         self.sp_drel.setRange(0.1, 3.0)
