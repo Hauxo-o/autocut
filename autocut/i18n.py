@@ -910,6 +910,12 @@ _T = {
     "idle.ask": ("{n} moment(s) vide(s) trouvé(s), soit {sec} s en tout.\n\nLes couper du montage (toutes les pistes, sans laisser de vide) ?", "{n} empty moment(s) found, {sec} s in total.\n\nCut them from the edit (all tracks, no gap)?", "何もない部分が {n} 件（合計 {sec} 秒）見つかりました。\n\n編集（全トラック、隙間なし）からカットしますか？", "{n} momento(s) vacío(s), {sec} s en total.\n\n¿Cortarlos del montaje (todas las pistas, sin huecos)?", "{n} leere Moment(e) gefunden, insgesamt {sec} s.\n\nAus dem Schnitt entfernen (alle Spuren, ohne Lücke)?"),
     "idle.done": ("{n} moment(s) vide(s) retiré(s) ({sec} s).", "{n} empty moment(s) removed ({sec} s).", "{n} 件の何もない部分を削除しました（{sec} 秒）。", "{n} momento(s) vacío(s) quitado(s) ({sec} s).", "{n} leere Moment(e) entfernt ({sec} s)."),
     "idle.changed": ("Le montage a changé pendant la recherche : relance-la.", "The edit changed during the search: run it again.", "検索中に編集が変更されました。もう一度実行してください。", "El montaje cambió durante la búsqueda: vuelve a lanzarla.", "Der Schnitt hat sich während der Suche geändert: starte sie erneut."),
+    "fs.btn": ("Apercu en plein ecran", "Full-screen preview", "プレビューを全画面表示", "Vista previa a pantalla completa", "Vorschau im Vollbild"),
+    "fs.hint": ("Espace ou clic = lecture / pause   •   ← → = 5 s (Maj = 1 s)   •   Echap, F ou double-clic = retour au montage",
+                "Space or click = play / pause   •   ← → = 5 s (Shift = 1 s)   •   Esc, F or double-click = back to the edit",
+                "スペースまたはクリック = 再生/一時停止  •  ← → = 5秒（Shift = 1秒）  •  Esc・F・ダブルクリック = 編集に戻る",
+                "Espacio o clic = reproducir / pausa  •  ← → = 5 s (Mayús = 1 s)  •  Esc, F o doble clic = volver al montaje",
+                "Leertaste oder Klick = Wiedergabe / Pause  •  ← → = 5 s (Umschalt = 1 s)  •  Esc, F oder Doppelklick = zurück zum Schnitt"),
 }
 
 STR = {c: {k: v[i] for k, v in _T.items()} for i, c in enumerate(CODES)}

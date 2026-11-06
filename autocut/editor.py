@@ -299,6 +299,78 @@ class PreviewCanvas(QGraphicsView):
         self._update_sel_rect()
 
 
+class FullscreenPreview(QWidget):
+    """L'apercu seul, en plein ecran (sans timeline ni panneaux). Espace / clic = lecture, fleches = avancer / reculer,
+    Echap / F / double-clic = revenir au montage."""
+    closed = Signal()
+
+    def __init__(self, page):
+        super().__init__(None, Qt.Window)
+        self.page = page
+        self.setStyleSheet("background:#000000;")
+        self.setFocusPolicy(Qt.StrongFocus)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.hint = QLabel(tr("fs.hint"))
+        self.hint.setStyleSheet("color:#cfd3da; background:rgba(0,0,0,150); padding:6px 12px;")
+        self.hint.setAlignment(Qt.AlignCenter)
+        self.lay = lay
+        self._hide_hint = QTimer(self)
+        self._hide_hint.setSingleShot(True)
+        self._hide_hint.setInterval(3500)
+        self._hide_hint.timeout.connect(self.hint.hide)
+
+    def open(self):
+        c = self.page.canvas
+        self._was_edit = c.edit_on
+        c.setParent(None)
+        self.lay.addWidget(c, 1)
+        self.lay.addWidget(self.hint)
+        c.setMinimumSize(0, 0)
+        c.show()
+        self.hint.show()
+        self._hide_hint.start()
+        self.showFullScreen()
+        self.setFocus()
+        c.installEventFilter(self)
+        QTimer.singleShot(50, c._layout_video)
+
+    def close_fs(self):
+        c = self.page.canvas
+        c.removeEventFilter(self)
+        self.lay.removeWidget(c)
+        self.page._top_layout.insertWidget(0, c, 1)
+        c.setMinimumSize(320, 150)
+        c.show()
+        self.hide()
+        self.closed.emit()
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.KeyPress:
+            self.keyPressEvent(e)
+            return True
+        if e.type() == QEvent.MouseButtonDblClick:
+            self.close_fs()
+            return True
+        if e.type() == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
+            self.page.toggle_play()
+            return True
+        return super().eventFilter(obj, e)
+
+    def keyPressEvent(self, e):
+        k, pv = e.key(), self.page.preview
+        if k in (Qt.Key_Escape, Qt.Key_F, Qt.Key_F11):
+            self.close_fs()
+        elif k == Qt.Key_Space:
+            self.page.toggle_play()
+        elif k == Qt.Key_Left:
+            pv.seek(pv.t - (1 if e.modifiers() & Qt.ShiftModifier else 5))
+        elif k == Qt.Key_Right:
+            pv.seek(pv.t + (1 if e.modifiers() & Qt.ShiftModifier else 5))
+        else:
+            super().keyPressEvent(e)
+
+
 class Preview(QObject):
     """Lecture du montage.
 
@@ -672,6 +744,7 @@ class EditorPage(QWidget):
         self.preview.timeChanged.connect(self._on_time)
         self.preview.stateChanged.connect(lambda _p: self._update_play_text())
         tv.addWidget(self.canvas, 1)
+        self._top_layout = tv
 
         tr_row = QHBoxLayout()
         tr_row.setSpacing(5)
@@ -685,6 +758,13 @@ class EditorPage(QWidget):
         tr_row.addSpacing(6)
         self._build_tools(tr_row)
         tr_row.addStretch(1)
+        self.btn_fs = r(QPushButton("⛶"), "fs.btn", "setToolTip")
+        self.btn_fs.setObjectName("tool")
+        self.btn_fs.setFixedSize(30, 28)
+        self.btn_fs.setFocusPolicy(Qt.NoFocus)
+        self.btn_fs.clicked.connect(self.preview_fullscreen)
+        tr_row.addWidget(self.btn_fs)
+        tr_row.addSpacing(8)
         for glyph, key, fn in (("−", "nav.zoomout", lambda: self.timeline.zoom(0.7)),
                                ("+", "nav.zoomin", lambda: self.timeline.zoom(1.4)),
                                ("↔", "nav.all", lambda: self.timeline.fit_all())):
@@ -1060,6 +1140,13 @@ class EditorPage(QWidget):
         return s
 
     # ------------------------------------------------------------ lecture
+    def preview_fullscreen(self):
+        """Affiche l'apercu seul en plein ecran (Echap pour revenir)."""
+        if getattr(self, "_fs", None) is None:
+            self._fs = FullscreenPreview(self)
+        if not self._fs.isVisible():
+            self._fs.open()
+
     def toggle_play(self):
         self.preview.toggle()
 
