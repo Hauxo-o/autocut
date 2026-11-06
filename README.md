@@ -32,3 +32,22 @@ python build_exe.py            # sortie : dist\AutoCut\AutoCut.exe
 - `autocut/audiotab.py` : l'onglet Son
 - `autocut/detect.py`, `xml_export.py`, `export.py` : detection des silences et exports
 - `autocut/i18n.py` : textes en francais, anglais, japonais, espagnol, allemand
+- `autocut/transcribe.py`, `aitools.py`, `ops.py`, `aicli.py`, `cli.py`, `setup_ai.py` : transcription locale et outils pour IA (voir ci-dessous)
+
+## Transcription locale et montage assiste par IA (gratuit, sans Internet)
+
+Installation **une seule fois** (environ 750 Mo, dans `C:\Users\<toi>\AutoCutAI`, rien dans l'exe) :
+
+    python setup_ai.py
+
+Ensuite, dans l'onglet Montage, groupe **Transcription** :
+- **Transcrire** : ecrit le texte de ta voix avec l'heure de chaque mot (le resultat est garde, jamais refait) ;
+- la **recherche** retrouve un mot ou une phrase dans le montage (double-clic = aller a cet endroit) ;
+- **Trouver les euh / hum**, puis **Couper tout** / **Couper la selection** : retire ces passages de toutes les pistes, sans vide (Ctrl+Z annule) ;
+- **Exporter pour l'IA** : ecrit `ia/resume.md` (montage + ce qui est dit et quand) et `ia/planche.png` (vignettes avec l'heure).
+
+En ligne de commande (pour qu'une IA agisse sur un projet, une copie `.bak` est gardee) :
+
+    python cli.py summary|sheet|transcribe|search|cut|cut-words|remove-fillers|close-gaps|volume|add-text|export-ai <projet> ...
+
+Voir l'en-tete de `autocut/aicli.py` pour le detail des commandes.

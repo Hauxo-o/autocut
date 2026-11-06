@@ -2,6 +2,8 @@
 
 Exemple :
   python cli.py "video test.mp4" --mode dead --track 0 --out resultats
+Montage d'un projet sans fenetre (IA) : python cli.py summary|sheet|transcribe|search|cut|cut-words|remove-fillers|close-gaps|volume|add-text|export-ai ...
+(voir autocut/aicli.py)
 """
 import argparse
 import os
@@ -13,6 +15,9 @@ from autocut.export import export_xml
 
 
 def main():
+    from autocut import aicli
+    if len(sys.argv) > 1 and sys.argv[1] in aicli.COMMANDS:         # montage en ligne de commande (voir autocut/aicli.py)
+        return aicli.main(sys.argv[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
     ap.add_argument("--mode", choices=["dead", "classic"], default="dead")

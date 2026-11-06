@@ -10,13 +10,13 @@ from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPen, QPixmap, QS
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
-    QButtonGroup, QColorDialog, QGraphicsItem, QInputDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsPixmapItem, QGraphicsRectItem,
+    QButtonGroup, QColorDialog, QGraphicsItem, QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsPixmapItem, QGraphicsRectItem,
     QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QScrollBar, QSpinBox, QSplitter, QVBoxLayout, QWidget,
     QCheckBox,
 )
 
-from . import projects, render, settings
+from . import aitools, ops, projects, render, settings, transcribe
 from .export import project_dir, unique_path
 from .ffmpeg_tools import _NOWIN, find_tool
 from .i18n import tr
@@ -545,6 +545,28 @@ class Preview(QObject):
 
 
 # ====================================================================== rendu en arriere-plan
+class FuncWorker(QThread):
+    """Execute une fonction longue (fn(progress, should_stop)) sans bloquer la fenetre."""
+    progress = Signal(float)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn, self._stop = fn, False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            self.done.emit(self.fn(self.progress.emit, lambda: self._stop))
+        except InterruptedError:
+            self.failed.emit("")
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
 class PassWorker(QThread):
     """Fabrique le fichier leger de la passe 'Couper les silences' (sans bloquer la fenetre)."""
     progress = Signal(float)
@@ -803,6 +825,57 @@ class EditorPage(QWidget):
         self.btn_ocolor.clicked.connect(lambda: self._pick_color("outline_color"))
         self.canvas.dragStarted.connect(self.push_undo)
         self.canvas.moved.connect(self._canvas_moved)
+
+        gt = r(QGroupBox(), "tr.title", "setTitle")
+        vt = QVBoxLayout(gt)
+        vt.setSpacing(6)
+        self.lbl_tr = QLabel()
+        self.lbl_tr.setObjectName("muted")
+        self.lbl_tr.setWordWrap(True)
+        vt.addWidget(self.lbl_tr)
+        trow = QHBoxLayout()
+        self.cb_trtrack = QComboBox()
+        self.btn_transcribe = r(QPushButton(), "tr.btn")
+        r(self.btn_transcribe, "tip.tr.btn", "setToolTip")
+        self.btn_transcribe.clicked.connect(self.start_transcription)
+        trow.addWidget(self.cb_trtrack, 1)
+        trow.addWidget(self.btn_transcribe)
+        vt.addLayout(trow)
+        self.ed_search = QLineEdit()
+        self.ed_search.setClearButtonEnabled(True)
+        self.ed_search.returnPressed.connect(self.tr_search)
+        self.ed_search.textChanged.connect(lambda t: self.tr_search() if not t.strip() or len(t.strip()) >= 3 else None)
+        self._tr.append(lambda: self.ed_search.setPlaceholderText(tr("tr.search.ph")))
+        self._tr[-1]()
+        vt.addWidget(self.ed_search)
+        self.lst_res = QListWidget()
+        self.lst_res.setMinimumHeight(120)
+        self.lst_res.setSelectionMode(QListWidget.ExtendedSelection)
+        self.lst_res.itemActivated.connect(self._tr_goto)
+        self.lst_res.itemDoubleClicked.connect(self._tr_goto)
+        vt.addWidget(self.lst_res)
+        self.lbl_trcount = QLabel()
+        self.lbl_trcount.setObjectName("muted")
+        vt.addWidget(self.lbl_trcount)
+        r1 = QHBoxLayout()
+        self.btn_fillers = r(QPushButton(), "tr.fillers")
+        r(self.btn_fillers, "tip.tr.fillers", "setToolTip")
+        self.btn_fillers.clicked.connect(self.tr_fillers)
+        self.btn_cut_sel = r(QPushButton(), "tr.cut.sel")
+        r(self.btn_cut_sel, "tip.tr.cut", "setToolTip")
+        self.btn_cut_sel.clicked.connect(lambda: self.tr_cut(False))
+        self.btn_cut_all = r(QPushButton(), "tr.cut.all")
+        r(self.btn_cut_all, "tip.tr.cut", "setToolTip")
+        self.btn_cut_all.clicked.connect(lambda: self.tr_cut(True))
+        for b in (self.btn_fillers, self.btn_cut_sel, self.btn_cut_all):
+            r1.addWidget(b)
+        vt.addLayout(r1)
+        self.btn_ai = r(QPushButton(), "tr.ai")
+        r(self.btn_ai, "tip.tr.ai", "setToolTip")
+        self.btn_ai.clicked.connect(self.export_for_ai)
+        vt.addWidget(self.btn_ai)
+        rv.addWidget(gt)
+        self._tr_matches, self._tr_kind, self._tr_worker, self._probed = [], "search", None, {}
 
         g3 = r(QGroupBox(), "ed.project", "setTitle")
         f3 = QFormLayout(g3)
@@ -1081,6 +1154,8 @@ class EditorPage(QWidget):
     def _load_props(self, keep_focus=False):
         c = self.sel
         self.canvas.set_edit_clip(c)
+        if hasattr(self, "cb_trtrack") and not self._updating:
+            self._tr_refresh()
         self._updating = True
         self.lbl_none.setVisible(c is None)
         self.form_host.setVisible(c is not None)
@@ -1349,29 +1424,17 @@ class EditorPage(QWidget):
     def close_gaps(self, record=True, leading=True):
         """Colle les morceaux : supprime les vides ou AUCUNE piste n'a quelque chose (les pistes restent synchro).
         leading : y compris le vide avant le premier element. Renvoie le nombre de secondes retirees."""
-        iv = sorted((c.start, c.end) for c in self.project.clips)
-        if not iv:
-            return 0.0
-        gaps, cur = [], 0.0
-        for k, (s, e) in enumerate(iv):
-            if s > cur + 1e-4 and (k > 0 or leading):
-                gaps.append((cur, s))
-            cur = max(cur, e)
-        if not gaps:
-            if record:
+        if not ops.find_gaps(self.project, leading):
+            if record and self.project.clips:
                 self.win.status(tr("st.gaps.none"))
             return 0.0
         if record:
             self.push_undo()
-        for a, b in sorted(gaps, reverse=True):
-            for c in self.project.clips:
-                if c.start >= b - 1e-6:
-                    c.start = max(0.0, c.start - (b - a))
-        total = sum(b - a for a, b in gaps)
+        n, total = ops.close_gaps(self.project, leading)
         self._after_project_change()
         self._load_props()
         if record:
-            self.win.status(tr("st.gaps.closed", n=len(gaps), sec=f"{total:.1f}"))
+            self.win.status(tr("st.gaps.closed", n=n, sec=f"{total:.1f}"))
         return total
 
     def _edit_finished(self):
@@ -1382,24 +1445,7 @@ class EditorPage(QWidget):
     def cut_source_ranges(self, path, ranges):
         """Retire du montage des intervalles (secondes) du FICHIER SOURCE `path` : ils sont traduits en instants du montage
         grace aux clips de ce fichier, puis retires de toutes les pistes. Renvoie les secondes retirees."""
-        p_abs = os.path.abspath(path)
-        refs = [c for c in self.project.clips if c.kind == "video" and os.path.abspath(c.path) == p_abs] or \
-               [c for c in self.project.clips if c.kind == "audio" and os.path.abspath(c.path) == p_abs]
-        tl = []
-        for c in refs:
-            acc = c.start
-            for s0, e0 in (c.segments or [[c.src_in, c.src_in + c.duration]]):
-                for a, b in ranges:
-                    x0, x1 = max(a, s0), min(b, e0)
-                    if x1 - x0 > 1e-4:
-                        tl.append((acc + x0 - s0, acc + x1 - s0))
-                acc += e0 - s0
-        merged = []
-        for a, b in sorted(tl):
-            if merged and a <= merged[-1][1] + 1e-6:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
-            else:
-                merged.append((a, b))
+        merged = ops.source_to_timeline(self.project, path, ranges)
         return self.apply_cut_ranges(merged) if merged else 0.0
 
     def duplicate_selected(self):
@@ -1449,23 +1495,7 @@ class EditorPage(QWidget):
             return
         if record:
             self.push_undo()
-        new_links = {}
-        for c in targets:
-            n = deepcopy(c)
-            n.id = Clip("text", "V1", 0, 1).id
-            old_end, local = c.end, t - c.start
-            if c.segments:                               # clip compose : chaque moitie garde ses passages
-                left = seg_window(c.segments, 0.0, local, 0.0)
-                right = seg_window(c.segments, local, c.duration, 0.0)
-                c.segments, n.segments = left, right
-                c.src_in, n.src_in = left[0][0], right[0][0]
-            elif c.kind in ("video", "audio"):
-                n.src_in = c.src_in + local
-            n.start, n.duration = t, old_end - t
-            if c.link:                                   # la moitie de droite forme un nouveau groupe lie
-                n.link = new_links.setdefault(c.link, Project.new_link())
-            c.duration = local
-            self.project.clips.append(n)
+        ops.split_clips(self.project, t, targets, min_dur)
         if record:
             self._after_project_change()
             self._load_props()
@@ -1474,28 +1504,10 @@ class EditorPage(QWidget):
         """Retire des intervalles de temps (secondes) de TOUT le montage : on coupe toutes les pistes aux deux bouts,
         on supprime ce qui est dedans, et on rapproche la suite pour boucher le trou. Un seul Ctrl+Z annule tout.
         Renvoie le nombre de secondes retirees."""
-        total = self.project.duration()
-        todo = []
-        for a, b in sorted(ranges):
-            a, b = max(0.0, a), (total + 1.0 if b >= total - 0.05 else b)
-            if b - a > 1e-3:
-                todo.append((a, b))
-        if not todo or total <= 0:
+        if not ops.plan_ranges(self.project, ranges):
             return 0.0
         self.push_undo()
-        removed = 0.0
-        for a, b in sorted(todo, reverse=True):               # de la fin vers le debut : les positions du debut ne bougent pas
-            self._split(b, list(self.project.clips), record=False, min_dur=1e-3)
-            self._split(a, list(self.project.clips), record=False, min_dur=1e-3)
-            keep, gap = [], min(b, total) - a
-            for c in self.project.clips:
-                if c.start >= a - 1e-6 and c.end <= b + 1e-6:
-                    continue                                   # entierement dans l'intervalle : supprime
-                if c.start >= b - 1e-6:
-                    c.start = max(0.0, c.start - gap)
-                keep.append(c)
-            self.project.clips = keep
-            removed += gap
+        removed = ops.cut_ranges(self.project, ranges)
         self.sel = None
         self.timeline.selected = None
         self._after_project_change()
@@ -1784,6 +1796,172 @@ class EditorPage(QWidget):
         self._dirty = False                                     # vient d'un fichier : rien a sauvegarder pour l'instant
         self.clear_autosave()
 
+    # ------------------------------------------------------------ transcription, recherche dans le texte
+    def _tr_source(self):
+        """Fichier video dont on parle : celui de l'element choisi, sinon le premier du montage."""
+        c = self.sel
+        if c is not None and c.kind in ("video", "audio") and c.path:
+            return os.path.abspath(c.path)
+        files = aitools.source_files(self.project)
+        return files[0] if files else None
+
+    def _tr_tracks(self, path):
+        if path not in self._probed:
+            try:
+                self._probed[path] = probe_media(path)
+            except Exception:  # noqa: BLE001
+                self._probed[path] = None
+        return self._probed[path]
+
+    def _tr_refresh(self):
+        """Met a jour le texte d'etat et la liste des pistes audio du groupe Transcription."""
+        path = self._tr_source()
+        self.cb_trtrack.blockSignals(True)
+        self.cb_trtrack.clear()
+        if path is None:
+            self.lbl_tr.setText(tr("tr.status.nofile"))
+            self.btn_transcribe.setEnabled(False)
+        else:
+            info = self._tr_tracks(path)
+            n = info["n_audio"] if info else 1
+            used = sorted({c.audio_index for c in self.project.clips if c.kind == "audio" and os.path.abspath(c.path) == path})
+            voice = used[-1] if used else max(0, n - 1)
+            for k in range(max(1, n)):
+                self.cb_trtrack.addItem(tr("track.item", n=k + 1, c=2), k)
+            self.cb_trtrack.setCurrentIndex(min(voice, self.cb_trtrack.count() - 1))
+            self.btn_transcribe.setEnabled(True)
+            data = self._tr_data(path)
+            if data is not None:
+                nw = sum(len(s["words"]) for s in data["segments"])
+                self.lbl_tr.setText(tr("tr.status.done", n=nw, name=os.path.basename(path)))
+            elif not transcribe.available():
+                self.lbl_tr.setText(tr("tr.status.noai"))
+            else:
+                self.lbl_tr.setText(tr("tr.status.none", name=os.path.basename(path)))
+        self.cb_trtrack.blockSignals(False)
+
+    def _tr_data(self, path):
+        for i in range(self.cb_trtrack.count() or 1):
+            try:
+                d = transcribe.get_cached(path, i)
+            except OSError:
+                d = None
+            if d is not None:
+                return d
+        return None
+
+    def start_transcription(self):
+        w = getattr(self, "_tr_worker", None)
+        if w is not None and w.isRunning():
+            w.stop()
+            return
+        path = self._tr_source()
+        if path is None:
+            return
+        if not transcribe.available():
+            QMessageBox.information(self.win, tr("tr.title"), tr("tr.missing", dir=transcribe.ai_dir()))
+            return
+        idx = self.cb_trtrack.currentData() or 0
+        self._tr_worker = FuncWorker(lambda prog, stop: transcribe.transcribe(path, idx, progress=prog, should_stop=stop))
+        self._tr_worker.progress.connect(lambda p_: self.win.task_update(p_, tr("tr.running", pct=f"{p_ * 100:.0f}")))
+        self._tr_worker.done.connect(self._tr_done)
+        self._tr_worker.failed.connect(self._tr_failed)
+        self.win.task_begin(tr("tr.running", pct="0"), cancel=self._tr_worker.stop)
+        self.btn_transcribe.setText(tr("btn.cancel"))
+        self._tr_worker.start()
+
+    def _tr_end(self):
+        self.win.task_end()
+        self.btn_transcribe.setText(tr("tr.btn"))
+
+    def _tr_done(self, data):
+        self._tr_end()
+        self._tr_refresh()
+        self.win.status(tr("tr.status.done", n=sum(len(s["words"]) for s in data["segments"]), name=""))
+        if self.ed_search.text().strip():
+            self.tr_search()
+
+    def _tr_failed(self, msg):
+        self._tr_end()
+        if msg:
+            QMessageBox.warning(self.win, tr("tr.title"), tr("tr.err", err=msg[-300:]))
+
+    def _tr_show(self, matches, kind):
+        self._tr_matches, self._tr_kind = matches, kind
+        self.lst_res.clear()
+        for m in matches:
+            it = QListWidgetItem(f"{fmt_t(m['start'])}   {m['context']}")
+            it.setData(Qt.UserRole, m)
+            self.lst_res.addItem(it)
+        self.lbl_trcount.setText(tr("tr.count", n=len(matches)) if matches else "")
+
+    def tr_search(self):
+        q = self.ed_search.text().strip()
+        if not q:
+            self._tr_show([], "search")
+            return
+        self._tr_show(aitools.find_in_project(self.project, q), "search")
+
+    def tr_fillers(self):
+        if self._tr_source() is None:
+            return
+        ms = aitools.find_in_project(self.project, fillers=True)
+        self._tr_show(ms, "fillers")
+        if not ms:
+            self.win.status(tr("tr.none"))
+
+    def _tr_goto(self, item):
+        m = item.data(Qt.UserRole)
+        if m:
+            self.preview.seek(m["start"])
+            tl = self.timeline
+            if not tl.scroll <= m["start"] <= tl.scroll + tl.visible_seconds():
+                tl.set_scroll(m["start"] - tl.visible_seconds() * 0.3)
+
+    def tr_cut(self, everything):
+        """Coupe du montage les passages de la liste (la selection, ou tous) : toutes les pistes, sans laisser de vide."""
+        if everything or not self.lst_res.selectedItems():
+            ms = list(self._tr_matches)
+        else:
+            ms = [it.data(Qt.UserRole) for it in self.lst_res.selectedItems()]
+        if not ms:
+            self.win.status(tr("tr.none"))
+            return
+        self.push_undo()
+        removed = aitools.cut_matches(self.project, ms)
+        self.sel = None
+        self.timeline.selected = None
+        self._after_project_change()
+        self._load_props()
+        self.win.status(tr("tr.cut.done", n=len(ms), sec=f"{removed:.1f}"))
+        if self._tr_kind == "fillers":
+            self.tr_fillers()
+        else:
+            self.tr_search()
+
+    def export_for_ai(self):
+        """Ecrit le resume du montage + une planche d'images dans le dossier du projet (sous-dossier ia) : de quoi
+        laisser une IA comprendre le montage sans l'ouvrir."""
+        if not self.project.clips:
+            return
+        base = os.path.dirname(self.project.path) if self.project.path else self._default_dir()
+        folder = os.path.join(base, "ia")
+        proj = deepcopy(self.project)
+        w = FuncWorker(lambda prog, stop: aitools.export_for_ai(proj, folder))
+        self._ai_worker = w
+        w.done.connect(lambda res: (self.win.task_end(), self._ai_done(folder, res)))
+        w.failed.connect(lambda m: (self.win.task_end(), QMessageBox.warning(self.win, tr("tr.title"), m[-300:])))
+        self.win.task_begin(tr("tr.ai.running"), indeterminate=True)
+        w.start()
+
+    def _ai_done(self, folder, res):
+        box = QMessageBox(QMessageBox.Information, tr("tr.title"), tr("tr.ai.done", folder=folder), QMessageBox.NoButton, self.win)
+        open_b = box.addButton(tr("btn.openfolder"), QMessageBox.AcceptRole)
+        box.addButton(tr("btn.close"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_b and hasattr(os, "startfile"):
+            os.startfile(folder)
+
     # ------------------------------------------------------------ export XML (DaVinci Resolve)
     def export_xml(self, path=None):
         """Ecrit le montage au format XML (Final Cut 7) : Fichier > Importer > Timeline dans DaVinci Resolve."""
@@ -1892,6 +2070,10 @@ class EditorPage(QWidget):
         if pw is not None and pw.isRunning():
             pw.stop()
             pw.wait(3000)
+        for w_ in (getattr(self, "_tr_worker", None), getattr(self, "_ai_worker", None)):
+            if w_ is not None and w_.isRunning():
+                w_.stop()
+                w_.wait(3000)
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(3000)
