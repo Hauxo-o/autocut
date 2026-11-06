@@ -54,3 +54,7 @@ Voir l'en-tete de `autocut/aicli.py` pour le detail des commandes.
 
 ### Couper les moments vides (Montage > Projet > « Couper les moments vides… »)
 Retire les passages ou il ne se passe rien : silence sur les pistes cochees (ta voix, le jeu ; decoche la musique de fond) ET image figee. Tu verifies le nombre de passages avant de couper (Ctrl+Z annule). En ligne de commande : `python cli.py cut-idle <projet> --db -45 --min 1.5 [--tracks A1] [--dry-run]`.
+
+### Mixer : faders groupés et ducking
+- **Ctrl+clic** (ou double-clic) sur un fader = retour à 0 dB. **Maj+clic** sur des faders = sélectionner plusieurs pistes (cadre coloré) : elles bougent ensemble, et Ctrl+clic remet toute la sélection à 0 dB. Clic simple sur une piste hors sélection = on désélectionne.
+- **Ducking** (carte à côté des faders) : la piste de voix (réglable) baisse les autres pistes marquées « Baisse » pendant qu'elle parle (baisse en dB, seuil de voix, durée du retour). Appliqué à l'aperçu et à l'export (`autocut/duck.py`).

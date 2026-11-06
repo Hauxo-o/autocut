@@ -8,11 +8,11 @@ from copy import deepcopy
 from PySide6.QtCore import QRectF, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSlider,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSlider,
     QVBoxLayout, QWidget,
 )
 
-from . import render
+from . import duck, render
 from .i18n import tr
 from .mediacache import PEAK_RATE, get_cache
 from .project import src_at
@@ -24,7 +24,22 @@ YT_LUFS, YT_TP = -14.0, -1.0
 
 
 class Fader(QSlider):
-    """Fader vertical en dB (pas de 0,5 dB). Double-clic = retour a 0 dB."""
+    """Fader vertical en dB (pas de 0,5 dB). Double-clic ou Ctrl+clic = retour a 0 dB, Maj+clic = (de)selectionner la piste
+    (les pistes selectionnees bougent ensemble)."""
+    modPressed = Signal(str)                           # "reset" | "toggle" | "plain"
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            if e.modifiers() & Qt.ControlModifier:
+                self.modPressed.emit("reset")
+                e.accept()
+                return
+            if e.modifiers() & Qt.ShiftModifier:
+                self.modPressed.emit("toggle")
+                e.accept()
+                return
+            self.modPressed.emit("plain")
+        super().mousePressEvent(e)
 
     def __init__(self):
         super().__init__(Qt.Vertical)
@@ -34,7 +49,7 @@ class Fader(QSlider):
         self.setTickInterval(12)                       # un repere tous les 6 dB
 
     def mouseDoubleClickEvent(self, e):
-        self.setValue(0)
+        self.modPressed.emit("reset")
         e.accept()
 
 
@@ -129,6 +144,7 @@ class AudioPage(QWidget):
         self.win, self.editor = win, editor
         self._updating = False
         self.rows = {}
+        self.selected = set()                 # pistes selectionnees (Maj+clic sur un fader) : elles bougent ensemble
         self._sig = None
         self.worker = None
         self._measured = None
@@ -181,6 +197,7 @@ class AudioPage(QWidget):
         self.strips_lay.setSpacing(10)
         self.strips_scroll.setWidget(self.strips_host)
         mix.addWidget(self.strips_scroll, 1)
+        mix.addWidget(self._build_duck_card())
         self.master_box = QHBoxLayout()
         mix.addLayout(self.master_box)
         v.addLayout(mix)
@@ -283,11 +300,18 @@ class AudioPage(QWidget):
             b.setFixedSize(34, 26)
             b.setFocusPolicy(Qt.NoFocus)
             btns.addWidget(b)
+        duckb = QPushButton()
+        duckb.setObjectName("tool")
+        duckb.setCheckable(True)
+        duckb.setFixedHeight(24)
+        duckb.setFocusPolicy(Qt.NoFocus)
         if not master:
             lay.addLayout(btns)
+            lay.addWidget(duckb)
         else:
             mute.hide()
             solo.hide()
+            duckb.hide()
             lay.addSpacing(30)
         slider = Fader()
         meter = LevelMeter()
@@ -313,7 +337,10 @@ class AudioPage(QWidget):
         spin.setAlignment(Qt.AlignCenter)
         lay.addWidget(spin)
         self.rows[t] = dict(frame=frame, name=name, count=count, mute=mute, solo=solo, slider=slider, spin=spin,
-                            meter=meter, peak=peak)
+                            meter=meter, peak=peak, duck=duckb)
+        slider.modPressed.connect(lambda kind, tk=t: self._fader_mod(tk, kind))
+        frame.mousePressEvent = lambda e, tk=t: self._frame_click(tk, e)
+        duckb.toggled.connect(lambda on, tk=t: self._set_duck_target(tk, on))
         slider.valueChanged.connect(lambda val, tk=t: self._set_gain(tk, val / 2.0, from_slider=True))
         spin.valueChanged.connect(lambda val, tk=t: self._set_gain(tk, val))
         mute.toggled.connect(lambda on, tk=t: self._set_mute(tk, on))
@@ -347,11 +374,20 @@ class AudioPage(QWidget):
                 r["mute"].setToolTip(tr("au.mute"))
                 r["solo"].setToolTip(tr("tl.solo"))
             r["slider"].setToolTip(tr("au.fader"))
+            if t != "M":
+                r["duck"].setToolTip(tr("duck.strip.tip"))
             r["meter"].setToolTip(tr("au.meter"))
             r["peak"].setToolTip(tr("au.meter"))
 
     def retranslate(self):
         self.title.setText(tr("au.title"))
+        self.duck_title.setText(tr("duck.title"))
+        self.chk_duck.setText(tr("duck.on"))
+        self.lbl_dsrc.setText(tr("duck.src"))
+        self.lbl_damt.setText(tr("duck.amount"))
+        self.lbl_dthr.setText(tr("duck.thr"))
+        self.lbl_drel.setText(tr("duck.rel"))
+        self.duck_note.setText(tr("duck.note"))
         self.note.setText(tr("au.note"))
         self.empty.setText(tr("au.empty"))
         self.loud_title.setText(tr("au.loud.title"))
@@ -384,6 +420,9 @@ class AudioPage(QWidget):
                 r["solo"].setChecked(bool(p.track_solo.get(t, False)))
                 n = sum(1 for c in p.clips if c.track == t and c.has_sound())
                 r["count"].setText(tr("au.clips", n=n))
+        self.selected &= set(self.rows)
+        self._paint_selection()
+        self._refresh_duck()
         self.empty.setVisible(not any(c.has_sound() for c in p.clips))
         self.update_meters(force=True)
         self.chk_norm.setChecked(p.normalize)
@@ -428,6 +467,8 @@ class AudioPage(QWidget):
                     seg = pk[max(0, i - 1): i + 2]
                     if len(seg):
                         amp = max(amp, float(seg.max()) * 10 ** (c.volume_db / 20.0) * lin)
+                if ed.preview.duck_env is not None and tk in duck.target_tracks(p):
+                    amp *= duck.gain_at(ed.preview.duck_env, t)
             total += amp * amp
             db = to_db(amp)
             r["meter"].push(db, smooth=playing)
@@ -437,24 +478,170 @@ class AudioPage(QWidget):
             self.rows["M"]["meter"].push(db, smooth=playing)
             self.rows["M"]["peak"].setText(db_text(self.rows["M"]["meter"].hold))
 
+    def _gain_of(self, track):
+        p = self.editor.project
+        return p.master_db if track == "M" else p.track_gain.get(track, 0.0)
+
+    def _put_gain(self, track, db):
+        p = self.editor.project
+        if track == "M":
+            p.master_db = db
+        else:
+            p.track_gain[track] = db
+        r = self.rows[track]
+        r["slider"].setValue(int(round(db * 2)))
+        r["spin"].setValue(db)
+
+    def _group(self, track):
+        """Pistes qui bougent avec celle-ci : toute la selection si elle en fait partie, sinon elle seule."""
+        return [t for t in self.rows if t in self.selected] if track in self.selected and len(self.selected) > 1 else [track]
+
     def _set_gain(self, track, db, from_slider=False):
         if self._updating:
             return
         db = max(DB_MIN, min(DB_MAX, db))
         ed = self.editor
+        old = self._gain_of(track)
+        delta = db - old
         ed.push_undo(coalesce=True)
-        if track == "M":
-            ed.project.master_db = db
-        else:
-            ed.project.track_gain[track] = db
         self._updating = True
-        r = self.rows[track]
-        if from_slider:
-            r["spin"].setValue(db)
-        else:
-            r["slider"].setValue(int(round(db * 2)))
+        for tk in self._group(track):
+            if tk == track:
+                self._put_gain(tk, db)
+            else:
+                self._put_gain(tk, max(DB_MIN, min(DB_MAX, self._gain_of(tk) + delta)))
         self._updating = False
         ed.preview.refresh()
+        ed.schedule_duck()
+
+    def _reset_gain(self, track):
+        """Ctrl+clic / double-clic : retour a 0 dB (pour toute la selection si la piste en fait partie)."""
+        ed = self.editor
+        ed.push_undo()
+        self._updating = True
+        for tk in self._group(track):
+            self._put_gain(tk, 0.0)
+        self._updating = False
+        ed.preview.refresh()
+        ed.schedule_duck()
+
+    def _fader_mod(self, track, kind):
+        if kind == "reset":
+            self._reset_gain(track)
+        elif kind == "toggle":
+            self.selected ^= {track}
+            self._paint_selection()
+        elif track not in self.selected:                # clic simple sur une piste hors selection : on desélectionne
+            self.selected.clear()
+            self._paint_selection()
+
+    def _frame_click(self, track, e):
+        if e.button() != Qt.LeftButton:
+            return
+        if e.modifiers() & Qt.ShiftModifier:
+            self.selected ^= {track}
+        else:
+            self.selected.clear()
+        self._paint_selection()
+
+    def _paint_selection(self):
+        col = self.palette().highlight().color().name()
+        for t, r in self.rows.items():
+            r["frame"].setStyleSheet(f"QFrame#card {{ border: 2px solid {col}; }}" if t in self.selected else "")
+
+    # ------------------------------------------------------------ ducking (la voix baisse les autres pistes)
+    def _build_duck_card(self):
+        card = QFrame()
+        card.setObjectName("card")
+        card.setFixedWidth(250)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        self.duck_title = QLabel()
+        self.duck_title.setObjectName("cardtitle")
+        self.chk_duck = QCheckBox()
+        self.cb_dsrc = QComboBox()
+        self.lbl_dsrc, self.lbl_damt, self.lbl_dthr, self.lbl_drel = QLabel(), QLabel(), QLabel(), QLabel()
+        self.sp_damt = QDoubleSpinBox()
+        self.sp_damt.setRange(-40.0, -1.0)
+        self.sp_dthr = QDoubleSpinBox()
+        self.sp_dthr.setRange(-70.0, -15.0)
+        self.sp_drel = QDoubleSpinBox()
+        self.sp_drel.setRange(0.1, 3.0)
+        self.sp_drel.setSingleStep(0.1)
+        for s_, suf in ((self.sp_damt, " dB"), (self.sp_dthr, " dB"), (self.sp_drel, " s")):
+            s_.setDecimals(1)
+            s_.setSuffix(suf)
+            s_.setKeyboardTracking(False)
+        self.duck_note = QLabel()
+        self.duck_note.setObjectName("muted")
+        self.duck_note.setWordWrap(True)
+        lay.addWidget(self.duck_title)
+        lay.addWidget(self.chk_duck)
+        for l_, w_ in ((self.lbl_dsrc, self.cb_dsrc), (self.lbl_damt, self.sp_damt), (self.lbl_dthr, self.sp_dthr),
+                       (self.lbl_drel, self.sp_drel)):
+            lay.addWidget(l_)
+            lay.addWidget(w_)
+        lay.addWidget(self.duck_note)
+        lay.addStretch(1)
+        self.chk_duck.toggled.connect(self._duck_toggled)
+        self.cb_dsrc.activated.connect(lambda _i: self._set_duck("duck_source", self.cb_dsrc.currentData()))
+        self.sp_damt.valueChanged.connect(lambda x: self._set_duck("duck_amount", float(x)))
+        self.sp_dthr.valueChanged.connect(lambda x: self._set_duck("duck_thr", float(x)))
+        self.sp_drel.valueChanged.connect(lambda x: self._set_duck("duck_release", float(x)))
+        return card
+
+    def _duck_toggled(self, on):
+        if self._updating:
+            return
+        p = self.editor.project
+        if on and self.cb_dsrc.currentData():
+            p.duck_source = self.cb_dsrc.currentData()
+        self._set_duck("duck_on", bool(on))
+
+    def _set_duck(self, attr, value):
+        if self._updating:
+            return
+        ed = self.editor
+        ed.push_undo(coalesce=True)
+        setattr(ed.project, attr, value)
+        self._refresh_duck()
+        ed.preview.refresh()
+        ed.schedule_duck()
+
+    def _set_duck_target(self, track, on):
+        if self._updating:
+            return
+        ed = self.editor
+        ed.push_undo()
+        ed.project.duck_targets[track] = bool(on)
+        ed.schedule_duck()
+
+    def _refresh_duck(self):
+        p = self.editor.project
+        was = self._updating
+        self._updating = True
+        self.chk_duck.setChecked(p.duck_on)
+        self.cb_dsrc.clear()
+        for t in p.audio_tracks():
+            self.cb_dsrc.addItem(tr("au.audio", n=t[1:]), t)
+        i = self.cb_dsrc.findData(p.duck_source)
+        self.cb_dsrc.setCurrentIndex(max(0, i))
+        self.sp_damt.setValue(p.duck_amount)
+        self.sp_dthr.setValue(p.duck_thr)
+        self.sp_drel.setValue(p.duck_release)
+        src = self.cb_dsrc.currentData() if i < 0 else p.duck_source
+        for t, r in self.rows.items():
+            if t == "M":
+                continue
+            b = r["duck"]
+            is_src = p.duck_on and t == src
+            b.setEnabled(p.duck_on and t.startswith("A") and not is_src)
+            b.setChecked(bool(p.duck_targets.get(t, True)) and t.startswith("A") and not is_src)
+            b.setText(tr("duck.voice") if is_src else tr("duck.strip"))
+        for w_ in (self.cb_dsrc, self.sp_damt, self.sp_dthr, self.sp_drel):
+            w_.setEnabled(p.duck_on)
+        self._updating = was
 
     def _set_mute(self, track, on):
         if self._updating:

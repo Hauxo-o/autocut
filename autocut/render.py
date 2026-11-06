@@ -7,6 +7,7 @@ import json
 import re
 import tempfile
 
+from . import duck
 from .ffmpeg_tools import _NOWIN, find_tool
 from .project import FONTS, track_num
 
@@ -188,6 +189,21 @@ def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=Fal
             else:
                 lines.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={_num(total)}[aout{k}]")
     elif labels:
+        if duck.active(project):                      # ducking : les pistes baissees passent par la courbe de la voix
+            tg = set(duck.target_tracks(project))
+            ducked = [l for t, ls in track_labels.items() if t in tg for l in ls]
+            rest = [l for l in labels if l not in ducked]
+            env = duck.envelope(project, total)
+            if ducked and env is not None:
+                wav = os.path.join(workdir, "duck_env.wav")
+                duck.write_wav(env, wav, total)
+                inputs += ["-i", wav]
+                lines.append("".join(ducked) + f"amix=inputs={len(ducked)}:duration=longest:normalize=0,"
+                             f"aformat=sample_fmts=fltp:channel_layouts=stereo[dtm]")
+                lines.append(f"[{n_in}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[dce]")
+                lines.append("[dtm][dce]amultiply[dtd]")
+                n_in += 1
+                labels = rest + ["[dtd]"]
         mix = ("".join(labels) + f"amix=inputs={len(labels)}:duration=longest:normalize=0,"
                f"apad=whole_dur={_num(total)}")
         lines.append(mix + (f",{_loudnorm_filter(project, loudnorm)}" if loudnorm is not None else "") + "[aout]")

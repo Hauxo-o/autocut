@@ -139,6 +139,12 @@ class Project:
         self.track_media = {}                           # False : pas de miniatures / forme d'onde dans la timeline
         self.track_h = {}                               # hauteur de la piste dans la timeline (px)
         self.master_db = 0.0
+        self.duck_on = False                            # ducking : la piste de voix baisse les autres pistes choisies
+        self.duck_source = "A1"                         # piste de voix
+        self.duck_targets = {}                          # piste -> True/False (absent = True) : baissee par la voix
+        self.duck_amount = -12.0                        # de combien elles baissent (dB)
+        self.duck_thr = -45.0                           # niveau de voix (dB) a partir duquel on baisse
+        self.duck_release = 0.5                         # duree du retour au volume normal (s)
         self.normalize = True                           # normaliser le son final a l'export (norme YouTube)
         self.norm_lufs = -14.0                          # volume cible (LUFS integres)
         self.norm_tp = -1.0                             # pic maximum autorise (dBTP, "true peak")
@@ -173,7 +179,8 @@ class Project:
             if c.track != mapping[c.track]:
                 c.track = mapping[c.track]
                 changed = True
-        for attr in ("track_gain", "track_mute", "track_solo", "track_media", "track_h"):
+        self.duck_source = mapping.get(self.duck_source, self.duck_source)
+        for attr in ("track_gain", "track_mute", "track_solo", "track_media", "track_h", "duck_targets"):
             d = getattr(self, attr)
             nd = {mapping[k]: v for k, v in d.items() if k in mapping}
             if nd != d:
@@ -244,6 +251,8 @@ class Project:
         p.track_gain, p.track_mute, p.master_db = dict(self.track_gain), dict(self.track_mute), self.master_db
         p.track_solo, p.track_media, p.track_h = dict(self.track_solo), dict(self.track_media), dict(self.track_h)
         p.normalize, p.norm_lufs, p.norm_tp = self.normalize, self.norm_lufs, self.norm_tp
+        p.duck_on, p.duck_source, p.duck_targets = self.duck_on, self.duck_source, dict(self.duck_targets)
+        p.duck_amount, p.duck_thr, p.duck_release = self.duck_amount, self.duck_thr, self.duck_release
         for c in self.clips:
             if not c.segments:
                 p.clips.append(c)
@@ -261,7 +270,9 @@ class Project:
                 "fps": self.fps, "track_gain": dict(self.track_gain), "track_mute": dict(self.track_mute),
                 "track_solo": dict(self.track_solo), "track_media": dict(self.track_media),
                 "track_h": dict(self.track_h), "master_db": self.master_db,
-                "normalize": self.normalize, "norm_lufs": self.norm_lufs, "norm_tp": self.norm_tp}
+                "normalize": self.normalize, "norm_lufs": self.norm_lufs, "norm_tp": self.norm_tp,
+                "duck_on": self.duck_on, "duck_source": self.duck_source, "duck_targets": dict(self.duck_targets),
+                "duck_amount": self.duck_amount, "duck_thr": self.duck_thr, "duck_release": self.duck_release}
 
     def restore(self, snap):
         self.clips = [Clip(**c) for c in snap["clips"]]
@@ -275,6 +286,12 @@ class Project:
         self.normalize = bool(snap.get("normalize", False))     # anciens projets : comme avant (pas de normalisation)
         self.norm_lufs = float(snap.get("norm_lufs", -14.0))
         self.norm_tp = float(snap.get("norm_tp", -1.0))
+        self.duck_on = bool(snap.get("duck_on", False))
+        self.duck_source = snap.get("duck_source", "A1")
+        self.duck_targets = dict(snap.get("duck_targets", {}))
+        self.duck_amount = float(snap.get("duck_amount", -12.0))
+        self.duck_thr = float(snap.get("duck_thr", -45.0))
+        self.duck_release = float(snap.get("duck_release", 0.5))
         self.compact()                                   # anciens fichiers : pistes V3/V2/V1 vides ou avec des trous
 
     # ---------------------------------------------------------------- fichier de projet

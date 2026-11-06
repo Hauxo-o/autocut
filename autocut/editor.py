@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox,
 )
 
-from . import aitools, idle, ops, projects, render, settings, transcribe
+from . import aitools, duck, idle, ops, projects, render, settings, transcribe
 from .export import project_dir, unique_path
 from .ffmpeg_tools import _NOWIN, find_tool
 from .i18n import tr
@@ -401,6 +401,7 @@ class Preview(QObject):
         self.vplayer.mediaStatusChanged.connect(self._v_status)
         self.vplayer.tracksChanged.connect(self._apply_track)
         self.aplayers = {}         # (fichier, piste) -> dict du lecteur
+        self.duck_env = None       # courbe de volume du ducking (voir duck.py), calculee en arriere-plan
         self.t = 0.0
         self.playing = False
         self._t0 = self._base = 0.0
@@ -475,7 +476,14 @@ class Preview(QObject):
         if not c.has_sound():
             return 0.0
         g = self.project.gain_db(c)
-        return 0.0 if g is None else min(1.0, _lin(g))      # l'apercu ne depasse jamais 0 dB
+        if g is None:
+            return 0.0
+        vol = min(1.0, _lin(g))                              # l'apercu ne depasse jamais 0 dB
+        p = self.project
+        if (self.duck_env is not None and p.duck_on and c.track.startswith("A") and c.track != p.duck_source
+                and p.duck_targets.get(c.track, True)):
+            vol *= duck.gain_at(self.duck_env, self.t)
+        return vol
 
     @staticmethod
     def _same_map(a, b):
@@ -1217,8 +1225,38 @@ class EditorPage(QWidget):
         self.overview.update()
         self.preview.refresh()
         self._sync_scrollbar()
+        self.schedule_duck()
         if self.audio_page is not None:
             self.audio_page.refresh()
+
+    def schedule_duck(self):
+        """Recalcule (en arriere-plan, un peu plus tard) la courbe du ducking utilisee par l'apercu."""
+        if not duck.active(self.project):
+            self.preview.duck_env = None
+            self._duck_rev = getattr(self, "_duck_rev", 0) + 1
+            return
+        if not hasattr(self, "_duck_timer"):
+            self._duck_timer = QTimer(self)
+            self._duck_timer.setSingleShot(True)
+            self._duck_timer.setInterval(600)
+            self._duck_timer.timeout.connect(self._duck_start)
+        self._duck_timer.start()
+
+    def _duck_start(self):
+        w = getattr(self, "_duck_worker", None)
+        if w is not None and w.isRunning():
+            self._duck_timer.start()                       # un calcul est deja en cours : on reessaie juste apres
+            return
+        self._duck_rev = getattr(self, "_duck_rev", 0) + 1
+        rev, proj = self._duck_rev, deepcopy(self.project)
+        self._duck_worker = FuncWorker(lambda prog, stop: (rev, duck.envelope(proj)))
+        self._duck_worker.done.connect(self._duck_done)
+        self._duck_worker.start()
+
+    def _duck_done(self, res):
+        rev, env = res
+        if rev == getattr(self, "_duck_rev", 0) and duck.active(self.project):
+            self.preview.duck_env = env
 
     def _load_format(self):
         self._updating = True
