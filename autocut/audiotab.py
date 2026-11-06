@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from . import duck, render
+from . import duck, render, settings
 from .i18n import tr
 from .mediacache import PEAK_RATE, get_cache
 from .project import src_at
@@ -113,6 +113,43 @@ class LevelMeter(QWidget):
             p.fillRect(QRectF(0, 0, w, 3), QColor("#ff2b2b"))
 
 
+ROLES = ("voice", "game", "music", "none")
+
+
+class AutoMixWorker(QThread):
+    """Mesure le volume de chaque piste seule (voix, jeu, musique) : {piste: LUFS ou None si silencieuse}."""
+    progress = Signal(float)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, project, tracks):
+        super().__init__()
+        self.project, self.tracks = deepcopy(project), list(tracks)
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            res = {}
+            for k, t in enumerate(self.tracks):
+                pp = deepcopy(self.project)
+                pp.track_gain, pp.master_db, pp.track_solo, pp.duck_on = {}, 0.0, {}, False
+                pp.track_mute = {x: x != t for x in pp.tracks()}            # seule cette piste est entendue
+                m = None
+                if render.has_sound(pp):
+                    m = render.measure_loudness(pp, progress=lambda x, k=k: self.progress.emit((k + x) / len(self.tracks)),
+                                                should_stop=lambda: self._stop)
+                res[t] = m["I"] if m and m.get("I") is not None and m["I"] > -70 else None
+                self.progress.emit((k + 1) / len(self.tracks))
+            self.done.emit(res)
+        except InterruptedError:
+            self.failed.emit("")
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
 class MeasureWorker(QThread):
     """Mesure le volume du son final du montage, sans bloquer la fenetre."""
     progress = Signal(float)
@@ -147,6 +184,7 @@ class AudioPage(QWidget):
         self.selected = set()                 # pistes selectionnees (Maj+clic sur un fader) : elles bougent ensemble
         self._sig = None
         self.worker = None
+        self.mix_worker = None
         self._measured = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -190,7 +228,7 @@ class AudioPage(QWidget):
         self.strips_scroll.setWidgetResizable(True)
         self.strips_scroll.setFrameShape(QScrollArea.NoFrame)
         self.strips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.strips_scroll.setFixedHeight(FADER_H + 190)
+        self.strips_scroll.setFixedHeight(FADER_H + 222)
         self.strips_host = QWidget()
         self.strips_lay = QHBoxLayout(self.strips_host)
         self.strips_lay.setContentsMargins(0, 0, 0, 0)
@@ -201,6 +239,7 @@ class AudioPage(QWidget):
         self.master_box = QHBoxLayout()
         mix.addLayout(self.master_box)
         v.addLayout(mix)
+        v.addWidget(self._build_mix_card())
 
         # ---- normalisation du son final
         card = QFrame()
@@ -305,13 +344,19 @@ class AudioPage(QWidget):
         duckb.setCheckable(True)
         duckb.setFixedHeight(24)
         duckb.setFocusPolicy(Qt.NoFocus)
+        role = QComboBox()
+        role.setFocusPolicy(Qt.NoFocus)
+        for key in ROLES:
+            role.addItem("", key)
         if not master:
             lay.addLayout(btns)
             lay.addWidget(duckb)
+            lay.addWidget(role)
         else:
             mute.hide()
             solo.hide()
             duckb.hide()
+            role.hide()
             lay.addSpacing(30)
         slider = Fader()
         meter = LevelMeter()
@@ -337,7 +382,8 @@ class AudioPage(QWidget):
         spin.setAlignment(Qt.AlignCenter)
         lay.addWidget(spin)
         self.rows[t] = dict(frame=frame, name=name, count=count, mute=mute, solo=solo, slider=slider, spin=spin,
-                            meter=meter, peak=peak, duck=duckb)
+                            meter=meter, peak=peak, duck=duckb, role=role)
+        role.activated.connect(lambda _i, tk=t, cb=role: self._set_role(tk, cb.currentData()))
         slider.modPressed.connect(lambda kind, tk=t: self._fader_mod(tk, kind))
         frame.mousePressEvent = lambda e, tk=t: self._frame_click(tk, e)
         duckb.toggled.connect(lambda on, tk=t: self._set_duck_target(tk, on))
@@ -376,11 +422,19 @@ class AudioPage(QWidget):
             r["slider"].setToolTip(tr("au.fader"))
             if t != "M":
                 r["duck"].setToolTip(tr("duck.strip.tip"))
+                r["role"].setToolTip(tr("mix.role.tip"))
+                for i, key in enumerate(ROLES):
+                    r["role"].setItemText(i, tr("mix." + key))
             r["meter"].setToolTip(tr("au.meter"))
             r["peak"].setToolTip(tr("au.meter"))
 
     def retranslate(self):
         self.title.setText(tr("au.title"))
+        self.mix_title.setText(tr("mix.title"))
+        self.mix_note.setText(tr("mix.note"))
+        self.btn_mix.setText(tr("mix.btn") if not (self.mix_worker and self.mix_worker.isRunning()) else tr("btn.cancel"))
+        for key, lbl in self.mix_lbls.items():
+            lbl.setText(tr("mix." + key))
         self.duck_title.setText(tr("duck.title"))
         self.chk_duck.setText(tr("duck.on"))
         self.lbl_dsrc.setText(tr("duck.src"))
@@ -422,6 +476,10 @@ class AudioPage(QWidget):
                 r["count"].setText(tr("au.clips", n=n))
         self.selected &= set(self.rows)
         self._paint_selection()
+        for t, r in self.rows.items():
+            if t != "M":
+                i = r["role"].findData(p.role_of(t))
+                r["role"].setCurrentIndex(max(0, i))
         self._refresh_duck()
         self.empty.setVisible(not any(c.has_sound() for c in p.clips))
         self.update_meters(force=True)
@@ -549,6 +607,110 @@ class AudioPage(QWidget):
         for t, r in self.rows.items():
             r["frame"].setStyleSheet(f"QFrame#card {{ border: 2px solid {col}; }}" if t in self.selected else "")
 
+    # ------------------------------------------------------------ mixage automatique (voix / jeu / musique)
+    def _build_mix_card(self):
+        card = QFrame()
+        card.setObjectName("card")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(18, 14, 18, 14)
+        cl.setSpacing(8)
+        self.mix_title = QLabel()
+        self.mix_title.setObjectName("cardtitle")
+        self.mix_note = QLabel()
+        self.mix_note.setObjectName("muted")
+        self.mix_note.setWordWrap(True)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.mix_lbls, self.mix_spins = {}, {}
+        for key, default in (("voice", -16.0), ("game", -24.0), ("music", -30.0)):
+            lbl = QLabel()
+            sp = QDoubleSpinBox()
+            sp.setRange(-50.0, -6.0)
+            sp.setSingleStep(1.0)
+            sp.setDecimals(1)
+            sp.setSuffix(" LUFS")
+            sp.setKeyboardTracking(False)
+            sp.setValue(float(settings.get("mix_" + key)))
+            sp.valueChanged.connect(lambda x, k=key: settings.put("mix_" + k, float(x)))
+            self.mix_lbls[key], self.mix_spins[key] = lbl, sp
+            row.addWidget(lbl)
+            row.addWidget(sp)
+        row.addStretch(1)
+        self.btn_mix = QPushButton()
+        self.btn_mix.setObjectName("primary")
+        self.btn_mix.clicked.connect(self.auto_mix)
+        row.addWidget(self.btn_mix)
+        self.mix_bar = QProgressBar()
+        self.mix_bar.setRange(0, 1000)
+        self.mix_bar.setTextVisible(False)
+        self.mix_bar.setFixedHeight(8)
+        self.mix_bar.hide()
+        self.mix_result = QLabel()
+        self.mix_result.setWordWrap(True)
+        for w_ in (self.mix_title, self.mix_note):
+            cl.addWidget(w_)
+        cl.addLayout(row)
+        cl.addWidget(self.mix_bar)
+        cl.addWidget(self.mix_result)
+        return card
+
+    def _set_role(self, track, role):
+        if self._updating:
+            return
+        ed = self.editor
+        ed.push_undo()
+        ed.project.track_role[track] = role
+
+    def auto_mix(self):
+        """Mesure chaque piste (voix, jeu, musique) seule, puis regle son fader pour atteindre le volume cible du role."""
+        if self.mix_worker is not None and self.mix_worker.isRunning():
+            self.mix_worker.stop()
+            return
+        p = self.editor.project
+        tracks = [t for t in p.audio_tracks() if p.role_of(t) != "none"]
+        if not tracks:
+            self.mix_result.setText(tr("mix.nothing"))
+            return
+        self._mix_rev = self.editor._rev
+        self.mix_worker = AutoMixWorker(p, tracks)
+        self.mix_worker.progress.connect(lambda x: self.mix_bar.setValue(int(x * 1000)))
+        self.mix_worker.done.connect(self._mix_done)
+        self.mix_worker.failed.connect(self._mix_failed)
+        self.mix_bar.setValue(0)
+        self.mix_bar.show()
+        self.mix_result.setText(tr("mix.running"))
+        self.btn_mix.setText(tr("btn.cancel"))
+        self.mix_worker.start()
+
+    def _mix_end(self):
+        self.mix_bar.hide()
+        self.btn_mix.setText(tr("mix.btn"))
+
+    def _mix_failed(self, msg):
+        self._mix_end()
+        self.mix_result.setText(tr("au.err", err=msg[-200:]) if msg else "")
+
+    def _mix_done(self, res):
+        self._mix_end()
+        ed, p = self.editor, self.editor.project
+        lines = []
+        ed.push_undo()
+        self._updating = True
+        for t, lufs in res.items():
+            role = p.role_of(t)
+            name = tr("au.audio", n=t[1:]) + " (" + tr("mix." + role) + ")"
+            if lufs is None:
+                lines.append(tr("mix.silent", name=name))
+                continue
+            target = float(settings.get("mix_" + role))
+            g = max(DB_MIN, min(DB_MAX, target - lufs))
+            self._put_gain(t, g)
+            lines.append(tr("mix.line", name=name, lufs=f"{lufs:.1f}", db=f"{g:+.1f}"))
+        self._updating = False
+        self.mix_result.setText("\n".join(lines))
+        ed.preview.refresh()
+        ed.schedule_duck()
+
     # ------------------------------------------------------------ ducking (la voix baisse les autres pistes)
     def _build_duck_card(self):
         card = QFrame()
@@ -595,7 +757,10 @@ class AudioPage(QWidget):
         if self._updating:
             return
         p = self.editor.project
-        if on and self.cb_dsrc.currentData():
+        voices = [t for t in p.audio_tracks() if p.role_of(t) == "voice"]
+        if on and voices:
+            p.duck_source = voices[0]
+        elif on and self.cb_dsrc.currentData():
             p.duck_source = self.cb_dsrc.currentData()
         self._set_duck("duck_on", bool(on))
 

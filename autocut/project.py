@@ -139,6 +139,7 @@ class Project:
         self.track_media = {}                           # False : pas de miniatures / forme d'onde dans la timeline
         self.track_h = {}                               # hauteur de la piste dans la timeline (px)
         self.master_db = 0.0
+        self.track_role = {}                            # piste -> "voice" | "game" | "music" | "none" (mixage automatique)
         self.duck_on = False                            # ducking : la piste de voix baisse les autres pistes choisies
         self.duck_source = "A1"                         # piste de voix
         self.duck_targets = {}                          # piste -> True/False (absent = True) : baissee par la voix
@@ -180,7 +181,7 @@ class Project:
                 c.track = mapping[c.track]
                 changed = True
         self.duck_source = mapping.get(self.duck_source, self.duck_source)
-        for attr in ("track_gain", "track_mute", "track_solo", "track_media", "track_h", "duck_targets"):
+        for attr in ("track_gain", "track_mute", "track_solo", "track_media", "track_h", "duck_targets", "track_role"):
             d = getattr(self, attr)
             nd = {mapping[k]: v for k, v in d.items() if k in mapping}
             if nd != d:
@@ -195,6 +196,12 @@ class Project:
             if self.free_at(t, start, end, ignore=ignore):
                 return t
         return f"{prefix}{track_num(names[-1]) + 1 if names else 1}"
+
+    DEFAULT_ROLES = {"A1": "voice", "A2": "game", "A3": "music"}      # tant que tu n'as rien choisi
+
+    def role_of(self, track):
+        """Role d'une piste son pour le mixage automatique : voix, jeu, musique ou rien."""
+        return self.track_role.get(track, self.DEFAULT_ROLES.get(track, "none"))
 
     def track_active(self, track):
         """La piste est-elle entendue / visible ? (pas coupee, et si un solo existe pour ce type, c'est elle)."""
@@ -251,6 +258,7 @@ class Project:
         p.track_gain, p.track_mute, p.master_db = dict(self.track_gain), dict(self.track_mute), self.master_db
         p.track_solo, p.track_media, p.track_h = dict(self.track_solo), dict(self.track_media), dict(self.track_h)
         p.normalize, p.norm_lufs, p.norm_tp = self.normalize, self.norm_lufs, self.norm_tp
+        p.track_role = dict(self.track_role)
         p.duck_on, p.duck_source, p.duck_targets = self.duck_on, self.duck_source, dict(self.duck_targets)
         p.duck_amount, p.duck_thr, p.duck_release = self.duck_amount, self.duck_thr, self.duck_release
         for c in self.clips:
@@ -271,6 +279,7 @@ class Project:
                 "track_solo": dict(self.track_solo), "track_media": dict(self.track_media),
                 "track_h": dict(self.track_h), "master_db": self.master_db,
                 "normalize": self.normalize, "norm_lufs": self.norm_lufs, "norm_tp": self.norm_tp,
+                "track_role": dict(self.track_role),
                 "duck_on": self.duck_on, "duck_source": self.duck_source, "duck_targets": dict(self.duck_targets),
                 "duck_amount": self.duck_amount, "duck_thr": self.duck_thr, "duck_release": self.duck_release}
 
@@ -286,6 +295,7 @@ class Project:
         self.normalize = bool(snap.get("normalize", False))     # anciens projets : comme avant (pas de normalisation)
         self.norm_lufs = float(snap.get("norm_lufs", -14.0))
         self.norm_tp = float(snap.get("norm_tp", -1.0))
+        self.track_role = dict(snap.get("track_role", {}))
         self.duck_on = bool(snap.get("duck_on", False))
         self.duck_source = snap.get("duck_source", "A1")
         self.duck_targets = dict(snap.get("duck_targets", {}))

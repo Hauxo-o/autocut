@@ -58,3 +58,6 @@ Retire les passages ou il ne se passe rien : silence sur les pistes cochees (ta 
 ### Mixer : faders groupés et ducking
 - **Ctrl+clic** (ou double-clic) sur un fader = retour à 0 dB. **Maj+clic** sur des faders = sélectionner plusieurs pistes (cadre coloré) : elles bougent ensemble, et Ctrl+clic remet toute la sélection à 0 dB. Clic simple sur une piste hors sélection = on désélectionne.
 - **Ducking** (carte à côté des faders) : la piste de voix (réglable) baisse les autres pistes marquées « Baisse » pendant qu'elle parle (baisse en dB, seuil de voix, durée du retour). Appliqué à l'aperçu et à l'export (`autocut/duck.py`).
+
+### Mixage automatique (onglet Son)
+Sous chaque fader, choisis le rôle de la piste (Voix, Jeu, Musique ; par défaut Audio 1 = Voix, 2 = Jeu, 3 = Musique). Le bouton « Régler les volumes automatiquement » mesure chaque piste seule et règle son fader pour atteindre le volume cible de son rôle (par défaut Voix −16, Jeu −24, Musique −30 LUFS, modifiables) ; la normalisation YouTube amène ensuite le tout à −14 LUFS. Ctrl+Z annule.

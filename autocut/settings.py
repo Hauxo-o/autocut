@@ -23,6 +23,9 @@ DEFAULTS = {
     "whisper_model": "small",   # modele de transcription (tiny / base / small / medium)
     "idle_db": -45,
     "idle_len": 1.5,
+    "mix_voice": -16.0,        # mixage automatique : volume cible de chaque role (LUFS)
+    "mix_game": -24.0,
+    "mix_music": -30.0,
     "tool_ripple": False,   # editeur : collage automatique des morceaux (pas de vide)
     "tool_active": "select",  # editeur : outil actif ("select" ou "cut")
 }

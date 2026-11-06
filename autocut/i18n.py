@@ -926,6 +926,18 @@ _T = {
     "duck.strip": ("Baisse", "Duck", "ダック", "Bajar", "Senken"),
     "duck.voice": ("● Voix", "● Voice", "● 声", "● Voz", "● Stimme"),
     "duck.strip.tip": ("Coché : cette piste baisse quand la voix parle (si le ducking est activé).", "Checked: this track goes down when the voice speaks (if ducking is on).", "チェック時：声が話すとこのトラックが下がります（ダッキング有効時）。", "Marcada: esta pista baja cuando habla la voz (si el ducking está activo).", "Angehakt: Diese Spur wird leiser, wenn die Stimme spricht (bei aktivem Ducking)."),
+    "mix.title": ("Mixage automatique (voix, jeu, musique)", "Automatic mix (voice, game, music)", "自動ミックス（声・ゲーム・音楽）", "Mezcla automática (voz, juego, música)", "Automatischer Mix (Stimme, Spiel, Musik)"),
+    "mix.note": ("Choisis le rôle de chaque piste sous son fader (Voix, Jeu, Musique). Le bouton mesure chaque piste seule et règle son fader pour atteindre le volume cible de son rôle ; ensuite la normalisation YouTube amène le tout à −14 LUFS. Ctrl+Z annule.", "Pick each track's role under its fader (Voice, Game, Music). The button measures each track alone and sets its fader to reach the target level of its role; the YouTube normalisation then brings everything to −14 LUFS. Ctrl+Z undoes it.", "各トラックの役割（声・ゲーム・音楽）をフェーダー下で選びます。ボタンで各トラックを単独で測定し、役割ごとの目標音量になるようフェーダーを設定します。その後YouTube正規化で全体が −14 LUFS になります。Ctrl+Zで元に戻せます。", "Elige el papel de cada pista bajo su fader (Voz, Juego, Música). El botón mide cada pista sola y ajusta su fader al volumen objetivo de su papel; luego la normalización de YouTube lleva todo a −14 LUFS. Ctrl+Z lo deshace.", "Wähle unter dem Fader die Rolle jeder Spur (Stimme, Spiel, Musik). Der Knopf misst jede Spur einzeln und stellt den Fader auf den Zielpegel der Rolle ein; danach bringt die YouTube-Normalisierung alles auf −14 LUFS. Strg+Z macht es rückgängig."),
+    "mix.voice": ("Voix", "Voice", "声", "Voz", "Stimme"),
+    "mix.game": ("Jeu", "Game", "ゲーム", "Juego", "Spiel"),
+    "mix.music": ("Musique", "Music", "音楽", "Música", "Musik"),
+    "mix.none": ("— (ignorer)", "— (ignore)", "—（無視）", "— (ignorar)", "— (ignorieren)"),
+    "mix.btn": ("Régler les volumes automatiquement", "Set the volumes automatically", "音量を自動調整", "Ajustar los volúmenes automáticamente", "Lautstärken automatisch einstellen"),
+    "mix.role.tip": ("Rôle de cette piste pour le mixage automatique.", "Role of this track for the automatic mix.", "この音声トラックの自動ミックスでの役割。", "Papel de esta pista para la mezcla automática.", "Rolle dieser Spur für den automatischen Mix."),
+    "mix.running": ("Mesure de chaque piste en cours…", "Measuring each track…", "各トラックを測定中…", "Midiendo cada pista…", "Jede Spur wird gemessen …"),
+    "mix.nothing": ("Aucune piste n'a de rôle : choisis Voix, Jeu ou Musique sous les faders.", "No track has a role: pick Voice, Game or Music under the faders.", "役割のあるトラックがありません。フェーダー下で声・ゲーム・音楽を選んでください。", "Ninguna pista tiene papel: elige Voz, Juego o Música bajo los faders.", "Keine Spur hat eine Rolle: wähle Stimme, Spiel oder Musik unter den Fadern."),
+    "mix.line": ("{name} : mesurée à {lufs} LUFS → fader réglé à {db} dB", "{name}: measured at {lufs} LUFS → fader set to {db} dB", "{name}：{lufs} LUFS を検出 → フェーダー {db} dB に設定", "{name}: medida en {lufs} LUFS → fader a {db} dB", "{name}: gemessen mit {lufs} LUFS → Fader auf {db} dB"),
+    "mix.silent": ("{name} : aucun son, laissée telle quelle", "{name}: no sound, left as is", "{name}：音がないためそのまま", "{name}: sin sonido, se deja igual", "{name}: kein Ton, unverändert"),
 }
 
 STR = {c: {k: v[i] for k, v in _T.items()} for i, c in enumerate(CODES)}
