@@ -8,6 +8,7 @@ Chaque commande qui MODIFIE un projet garde d'abord une copie '<projet>.bak' (la
   python cli.py cut      <projet> --range 12.5 18 [--range 40 41.2]    retire ces intervalles (secondes du montage)
   python cli.py cut-words <projet> "texte"                             retire chaque passage ou ce texte est dit
   python cli.py remove-fillers <projet>                                retire les euh / hum
+  python cli.py cut-idle <projet> [--db -45] [--min 1.5] [--tracks A1 A2] [--picture normal|low|high|off]   retire les moments vides
   python cli.py close-gaps <projet> [--keep-start]                     colle les morceaux (pas de vide)
   python cli.py volume   <projet> --track A1 --db -3   (ou --master --db -2)
   python cli.py add-text <projet> --text "Titre" --start 0 --duration 4 [--x 50 --y 82 --size 72 --color #ffffff]
@@ -19,7 +20,7 @@ import shutil
 import sys
 
 COMMANDS = {"summary", "sheet", "transcribe", "search", "cut", "cut-words", "remove-fillers", "close-gaps", "volume",
-            "add-text", "export-ai"}
+            "add-text", "export-ai", "cut-idle"}
 
 
 def _load(path):
@@ -45,7 +46,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="cli.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("summary", "sheet", "search", "cut", "cut-words", "remove-fillers", "close-gaps", "volume", "add-text",
-                 "export-ai", "transcribe"):
+                 "export-ai", "transcribe", "cut-idle"):
         s = sub.add_parser(name)
         s.add_argument("target", help="projet .autocut.json (ou, pour transcribe, une video)")
         if name == "search" or name == "cut-words":
@@ -60,6 +61,12 @@ def main(argv=None):
             s.add_argument("--track", type=int, default=0)
         if name == "cut":
             s.add_argument("--range", nargs=2, type=float, action="append", required=True, metavar=("DEBUT", "FIN"))
+        if name == "cut-idle":
+            s.add_argument("--db", type=float, default=-45.0)
+            s.add_argument("--min", type=float, default=1.5)
+            s.add_argument("--tracks", nargs="*")
+            s.add_argument("--picture", default="normal", choices=["normal", "low", "high", "off"])
+            s.add_argument("--dry-run", action="store_true", help="liste seulement, ne coupe pas")
         if name == "close-gaps":
             s.add_argument("--keep-start", action="store_true", help="ne pas boucher le vide avant le premier element")
         if name == "volume":
@@ -129,6 +136,18 @@ def main(argv=None):
         if ms:
             _save(p, a.target)
         print(f"{len(ms)} hesitation(s) (euh, hum...) retiree(s), {removed:.2f} s ; nouvelle duree {p.duration():.2f} s")
+    elif a.cmd == "cut-idle":
+        from autocut import idle
+        rs = idle.idle_ranges(p, tracks=set(a.tracks) if a.tracks else None, db=a.db, min_len=a.min,
+                              picture=None if a.picture == "off" else a.picture)
+        for x, y in rs:
+            print(f"[{aitools.fmt_t(x)} -> {aitools.fmt_t(y)}] {y - x:.1f} s")
+        if rs and not a.dry_run:
+            removed = ops.cut_ranges(p, rs)
+            _save(p, a.target)
+            print(f"{len(rs)} moment(s) vide(s) retire(s), {removed:.2f} s ; nouvelle duree {p.duration():.2f} s")
+        else:
+            print(f"{len(rs)} moment(s) vide(s) trouves, {sum(y - x for x, y in rs):.1f} s")
     elif a.cmd == "close-gaps":
         n, sec = ops.close_gaps(p, leading=not a.keep_start)
         if n:

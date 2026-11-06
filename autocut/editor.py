@@ -13,10 +13,10 @@ from PySide6.QtWidgets import (
     QButtonGroup, QColorDialog, QGraphicsItem, QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsPixmapItem, QGraphicsRectItem,
     QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView, QGroupBox, QHBoxLayout, QLabel, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QScrollBar, QSpinBox, QSplitter, QVBoxLayout, QWidget,
-    QCheckBox,
+    QCheckBox, QDialog, QDialogButtonBox,
 )
 
-from . import aitools, ops, projects, render, settings, transcribe
+from . import aitools, idle, ops, projects, render, settings, transcribe
 from .export import project_dir, unique_path
 from .ffmpeg_tools import _NOWIN, find_tool
 from .i18n import tr
@@ -896,6 +896,10 @@ class EditorPage(QWidget):
             b = r(QPushButton(), key)
             b.clicked.connect(fn)
             prow.addWidget(b)
+        self.btn_idle = r(QPushButton(), "idle.btn")
+        r(self.btn_idle, "tip.idle", "setToolTip")
+        self.btn_idle.clicked.connect(self.start_idle)
+        f3.addRow(self.btn_idle)
         self.btn_pass = r(QPushButton(), "ed.pass")
         r(self.btn_pass, "tip.pass", "setToolTip")
         self.btn_pass.clicked.connect(self.start_silence_pass)
@@ -1514,6 +1518,99 @@ class EditorPage(QWidget):
         self._load_props()
         return removed
 
+    # ------------------------------------------------------------ couper les moments ou il ne se passe rien
+    def _idle_dialog(self):
+        """Reglages : quelles pistes ecouter, seuil de silence, duree mini, regarder l'image. Renvoie un dict ou None."""
+        tl_ = idle.audio_track_list(self.project)
+        d = QDialog(self.win)
+        d.setWindowTitle(tr("idle.title"))
+        v = QVBoxLayout(d)
+        intro = QLabel(tr("idle.intro"))
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+        boxes = []
+        for t, desc in tl_:
+            cb = QCheckBox(f"{t}  -  {desc}")
+            cb.setChecked(True)
+            cb.setProperty("track", t)
+            boxes.append(cb)
+            v.addWidget(cb)
+        if not boxes:
+            v.addWidget(QLabel(tr("idle.nosound")))
+        form = QFormLayout()
+        sp_db = QSpinBox()
+        sp_db.setRange(-80, -10)
+        sp_db.setValue(int(settings.get("idle_db") or -45))
+        sp_db.setSuffix(" dB")
+        sp_len = QDoubleSpinBox()
+        sp_len.setRange(0.3, 30)
+        sp_len.setSingleStep(0.5)
+        sp_len.setValue(float(settings.get("idle_len") or 1.5))
+        sp_len.setSuffix(" s")
+        cb_pic = QComboBox()
+        for key, label in (("normal", "idle.pic.normal"), ("low", "idle.pic.low"), ("high", "idle.pic.high"), (None, "idle.pic.off")):
+            cb_pic.addItem(tr(label), key)
+        form.addRow(tr("idle.db"), sp_db)
+        form.addRow(tr("idle.len"), sp_len)
+        form.addRow(tr("idle.pic"), cb_pic)
+        v.addLayout(form)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        if d.exec() != QDialog.Accepted:
+            return None
+        tracks = {b.property("track") for b in boxes if b.isChecked()}
+        settings.put("idle_db", sp_db.value())
+        settings.put("idle_len", sp_len.value())
+        return dict(tracks=tracks, db=float(sp_db.value()), min_len=sp_len.value(), picture=cb_pic.currentData())
+
+    def start_idle(self):
+        w = getattr(self, "_idle_worker", None)
+        if w is not None and w.isRunning():
+            w.stop()
+            return
+        if not any(c.kind == "video" for c in self.project.clips):
+            QMessageBox.information(self.win, tr("idle.title"), tr("idle.novideo"))
+            return
+        opts = self._idle_dialog()
+        if opts is None:
+            return
+        self.preview.pause()
+        proj = deepcopy(self.project)
+        self._idle_worker = FuncWorker(lambda prog, stop: idle.idle_ranges(proj, progress=prog, should_stop=stop, **opts))
+        self._idle_worker.progress.connect(lambda p_: self.win.task_update(p_, tr("idle.running", pct=f"{p_ * 100:.0f}")))
+        self._idle_worker.done.connect(self._idle_done)
+        self._idle_worker.failed.connect(self._idle_failed)
+        self.win.task_begin(tr("idle.running", pct="0"), cancel=self._idle_worker.stop)
+        self.btn_idle.setText(tr("btn.cancel"))
+        self._idle_rev = self._rev
+        self._idle_worker.start()
+
+    def _idle_end(self):
+        self.win.task_end()
+        self.btn_idle.setText(tr("idle.btn"))
+
+    def _idle_failed(self, msg):
+        self._idle_end()
+        if msg:
+            QMessageBox.warning(self.win, tr("idle.title"), msg[-300:])
+
+    def _idle_done(self, ranges):
+        self._idle_end()
+        if self._rev != self._idle_rev:
+            QMessageBox.information(self.win, tr("idle.title"), tr("idle.changed"))
+            return
+        if not ranges:
+            QMessageBox.information(self.win, tr("idle.title"), tr("idle.none"))
+            return
+        total = sum(b - a for a, b in ranges)
+        ans = QMessageBox.question(self.win, tr("idle.title"), tr("idle.ask", n=len(ranges), sec=f"{total:.0f}"),
+                                   QMessageBox.Yes | QMessageBox.No)
+        if ans == QMessageBox.Yes:
+            removed = self.apply_cut_ranges(ranges)
+            self.win.status(tr("idle.done", n=len(ranges), sec=f"{removed:.1f}"))
+
     # ------------------------------------------------------------ passe "Couper les silences" sur le montage
     def start_silence_pass(self):
         """Prepare un fichier leger du montage (une piste son par piste) et l'ouvre dans l'onglet Couper les silences :
@@ -2070,7 +2167,7 @@ class EditorPage(QWidget):
         if pw is not None and pw.isRunning():
             pw.stop()
             pw.wait(3000)
-        for w_ in (getattr(self, "_tr_worker", None), getattr(self, "_ai_worker", None)):
+        for w_ in (getattr(self, "_tr_worker", None), getattr(self, "_ai_worker", None), getattr(self, "_idle_worker", None)):
             if w_ is not None and w_.isRunning():
                 w_.stop()
                 w_.wait(3000)

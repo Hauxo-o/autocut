@@ -51,3 +51,6 @@ En ligne de commande (pour qu'une IA agisse sur un projet, une copie `.bak` est 
     python cli.py summary|sheet|transcribe|search|cut|cut-words|remove-fillers|close-gaps|volume|add-text|export-ai <projet> ...
 
 Voir l'en-tete de `autocut/aicli.py` pour le detail des commandes.
+
+### Couper les moments vides (Montage > Projet > « Couper les moments vides… »)
+Retire les passages ou il ne se passe rien : silence sur les pistes cochees (ta voix, le jeu ; decoche la musique de fond) ET image figee. Tu verifies le nombre de passages avant de couper (Ctrl+Z annule). En ligne de commande : `python cli.py cut-idle <projet> --db -45 --min 1.5 [--tracks A1] [--dry-run]`.

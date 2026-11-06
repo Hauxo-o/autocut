@@ -21,6 +21,8 @@ DEFAULTS = {
     "tool_linked": True,    # editeur : bouton 'toutes les pistes' active
     "ai_dir": "",           # dossier de l'IA locale (transcription) ; "" = C:\Users\<toi>\AutoCutAI
     "whisper_model": "small",   # modele de transcription (tiny / base / small / medium)
+    "idle_db": -45,
+    "idle_len": 1.5,
     "tool_ripple": False,   # editeur : collage automatique des morceaux (pas de vide)
     "tool_active": "select",  # editeur : outil actif ("select" ou "cut")
 }
