@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 from PySide6.QtCore import QEvent, QLineF, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QScrollBar, QToolTip, QWidget
 
 from .i18n import tr
@@ -401,6 +401,9 @@ class TimelineWidget(QWidget):
                            tr("tl.newv" if row["track"][0] == "V" else "tl.newa"))
             else:
                 p.fillRect(r, col("card") if i % 2 == 0 else col("field"))
+                if not self.project.track_active(row["track"]):          # piste muette : toute la ligne est grisee, hachuree
+                    p.fillRect(r, QColor(0, 0, 0, 90))
+                    p.fillRect(r, QBrush(QColor(128, 128, 128, 60), Qt.BDiagPattern))
         self._grid(p, w, h)
         # elements (dessines seulement a droite de la colonne des noms de pistes)
         p.setClipRect(QRectF(LABEL_W, RULER_H, w - LABEL_W, h - RULER_H))
@@ -416,7 +419,10 @@ class TimelineWidget(QWidget):
             if lost:
                 base = QColor("#8a3a36")
             active = self.project.track_active(c.track)
-            p.setOpacity(1.0 if active else 0.35)
+            silent = (c.kind == "audio" and c.mute_audio) or not active          # on n'entend pas cet element
+            if silent and not lost:
+                base = QColor.fromHsv(base.hue() if base.hue() >= 0 else 0, base.saturation() // 8, int(base.value() * 0.5))
+            p.setOpacity(0.5 if silent else 1.0)
             if c is self.selected:
                 pen = QPen(col("text"), 2)
             elif c.id in group:
@@ -441,6 +447,13 @@ class TimelineWidget(QWidget):
                 p.setBrush(Qt.NoBrush)
                 p.drawRoundedRect(r, 6, 6)
                 p.setRenderHint(QPainter.Antialiasing, False)
+            if silent and not lost:                           # hachures : "ce son est coupe"
+                p.save()
+                hp = QPainterPath()
+                hp.addRoundedRect(r.adjusted(1, 1, -1, -1), 5, 5)
+                p.setClipPath(hp, Qt.IntersectClip)
+                p.fillRect(r, QBrush(QColor(0, 0, 0, 110), Qt.BDiagPattern))
+                p.restore()
             if len(c.segments) > 1 and r.width() > 30:        # reperes aux endroits des coupes
                 p.setPen(QPen(col("wave_bg", 200) if not shown else QColor(255, 255, 255, 190), 1))
                 acc = 0.0
@@ -452,8 +465,10 @@ class TimelineWidget(QWidget):
             if r.width() > 24 and r.height() >= 13:
                 p.save()
                 p.setClipRect(r.adjusted(4, 0, -4, 0).intersected(QRectF(LABEL_W, 0, w, h)))
-                icon = "⚠ " if lost else {"video": "▶ ", "image": "▣ ", "text": "T ", "audio": "♪ "}[c.kind]
+                icon = "⚠ " if lost else ("⊘ " if silent else {"video": "▶ ", "image": "▣ ", "text": "T ", "audio": "♪ "}[c.kind])
                 extra = f"  ({len(c.segments)} ✂)" if len(c.segments) > 1 else ""
+                if silent and not lost:
+                    extra += "  (" + tr("tl.muted") + ")"
                 text = icon + c.label() + extra
                 tr_ = r.adjusted(7, 0, -4, 0)
                 if shown:                                       # texte lisible par-dessus une image / une onde
@@ -492,9 +507,13 @@ class TimelineWidget(QWidget):
             if row["ghost"]:
                 continue
             t = row["track"]
-            p.fillRect(QRectF(0, r.top() + 1, 3, max(2.0, r.height() - 2)), col("accent") if t[0] == "V" else col("wave"))
+            off = not self.project.track_active(t)
+            if off:                                              # piste muette : en-tete grise et barre rouge
+                p.fillRect(QRectF(0, r.top(), LABEL_W, r.height()), QColor(0, 0, 0, 90))
+            p.fillRect(QRectF(0, r.top() + 1, 3, max(2.0, r.height() - 2)),
+                       QColor("#d9534f") if off else (col("accent") if t[0] == "V" else col("wave")))
             p.setFont(bold)
-            p.setPen(col("muted"))
+            p.setPen(col("muted", 110) if off else col("muted"))
             p.drawText(QRectF(2, r.top(), 32, r.height()), Qt.AlignCenter, t)
             self._paint_buttons(p, t, small)
             p.setPen(QPen(col("border"), 1))                  # bord du bas : on peut le tirer pour changer la hauteur

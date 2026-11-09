@@ -323,8 +323,8 @@ def build_command(project, out_path, workdir, loudnorm=None, per_track=False, st
         for k in range(len(project.audio_tracks())):
             maps += ["-map", f"[aout{k}]"]
         cmd = (head + ["-/filter_complex", "graph.txt"] + maps +
-               ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", _num(project.fps),
-                "-c:a", "aac", "-b:a", "96k", "-t", _num(total), "-movflags", "+faststart", out_path])
+               ["-c:v", "libx264", "-preset", "superfast", "-crf", "22", "-pix_fmt", "yuv420p", "-r", _num(project.fps),
+                "-c:a", "aac", "-b:a", "192k", "-t", _num(total), "-movflags", "+faststart", out_path])
         return cmd, total
     maps, meta = ["-map", "[vout]", "-map", "[aout]"], []
     if stems:                                        # flux 1 = mixage complet, puis une piste audio par piste du montage
@@ -396,10 +396,11 @@ def measure_file(path):
     return _parse_loudnorm(r.stderr)
 
 
-def make_pass_project(project, height=360):
+def make_pass_project(project, height=720):
     """Copie legere du montage pour la 'passe' Couper les silences : image reduite, et chaque piste son telle quelle
     (sans sourdine, solo ni volume : on analyse le son brut de chaque piste)."""
     pp = copy.deepcopy(project)
+    height = min(height, project.height)                  # jamais plus grand que le montage
     pp.width, pp.height = max(2, int(project.width * height / project.height) // 2 * 2), height
     pp.normalize, pp.master_db, pp.track_gain = False, 0.0, {}
     pp.track_mute = {k: v for k, v in project.track_mute.items() if k.startswith("V")}

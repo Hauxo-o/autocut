@@ -70,7 +70,7 @@ def _lin(db):
 
 def make_cut_clips(media, segs, start, mix_index, origin):
     """Les passages gardes d'une video = UN clip video (compose de tous les passages) + UN clip par piste audio,
-    lies entre eux. segs : liste de (image_debut, image_fin). Seule la piste 'mixee' est audible au depart."""
+    lies entre eux. segs : liste de (image_debut, image_fin). Toutes les pistes audio sont audibles au depart."""
     fps = float(media["fps"])
     segs_s = [[a / fps, b / fps] for a, b in segs]
     total = sum(e - s for s, e in segs_s)
@@ -82,7 +82,7 @@ def make_cut_clips(media, segs, start, mix_index, origin):
     for k in range(n_aud):
         clips.append(Clip("audio", f"A{k + 1}", start, total, path=media["path"], src_in=segs_s[0][0],
                           src_duration=media["duration"], name=tr("ed.audio.track", name=media["name"], n=k + 1),
-                          audio_index=k, mute_audio=(k != mix_index), link=link, origin=origin,
+                          audio_index=k, mute_audio=False, link=link, origin=origin,
                           segments=[list(x) for x in segs_s]))
     return clips
 
