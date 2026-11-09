@@ -23,6 +23,7 @@ DEFAULTS = {
     "whisper_model": "small",   # modele de transcription (tiny / base / small / medium)
     "idle_db": -45,
     "idle_len": 1.5,
+    "export_multitrack": True,     # MP4 multipiste par defaut
     "mix_voice": -16.0,        # mixage automatique : volume cible de chaque role (LUFS)
     "mix_game": -24.0,
     "mix_music": -30.0,

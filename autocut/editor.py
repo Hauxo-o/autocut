@@ -23,7 +23,7 @@ from .i18n import tr
 from .project import (FONTS, FPS_CHOICES, MIN_DUR, RESOLUTIONS, Clip, Project, seg_index_at, seg_window, src_at,
                       track_num)
 from .timeline import ProjectOverview, TimelineWidget
-from .xml_export import build_project_xml
+from .xml_export import build_project_fcpxml, build_project_xml
 
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".wmv"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"}
@@ -676,9 +676,9 @@ class RenderWorker(QThread):
     done = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, project, path):
+    def __init__(self, project, path, stems=False):
         super().__init__()
-        self.project, self.path = deepcopy(project), path
+        self.project, self.path, self.stems = deepcopy(project), path, stems
         self.info = {}                    # volume du fichier cree (si la normalisation est active)
         self._stop = False
 
@@ -687,7 +687,8 @@ class RenderWorker(QThread):
 
     def run(self):
         try:
-            render.render(self.project, self.path, progress=self.progress.emit, should_stop=lambda: self._stop)
+            render.render(self.project, self.path, progress=self.progress.emit, should_stop=lambda: self._stop,
+                          stems=self.stems)
             if getattr(self.project, "normalize", False) and render.has_sound(self.project):
                 try:                      # on verifie le resultat : volume reel du fichier cree
                     self.info["after"] = render.measure_file(self.path)
@@ -1025,9 +1026,19 @@ class EditorPage(QWidget):
         r(self.btn_xml, "tip.xml", "setToolTip")
         self.btn_xml.setStyleSheet("padding: 8px 14px;")
         self.btn_xml.clicked.connect(self.export_xml)
+        self.btn_fcpxml = r(QPushButton(), "ed.fcpxml")
+        r(self.btn_fcpxml, "tip.fcpxml", "setToolTip")
+        self.btn_fcpxml.setStyleSheet("padding: 8px 14px;")
+        self.btn_fcpxml.clicked.connect(self.export_fcpxml)
+        self.chk_multi = r(QCheckBox(), "ed.export.multi")
+        r(self.chk_multi, "tip.export.multi", "setToolTip")
+        self.chk_multi.setChecked(bool(settings.get("export_multitrack")))
+        self.chk_multi.toggled.connect(lambda on: settings.put("export_multitrack", bool(on)))
         fl.addWidget(self.bar)
+        fl.addWidget(self.chk_multi)
         fl.addWidget(self.btn_export)
         fl.addWidget(self.btn_xml)
+        fl.addWidget(self.btn_fcpxml)
         pl.addWidget(foot)
         self.panel = panel_w
         self.btn_panel = QPushButton("▶")
@@ -1746,6 +1757,8 @@ class EditorPage(QWidget):
         if not any(c.kind == "audio" for c in self.project.clips):
             QMessageBox.information(self.win, tr("ed.pass.title"), tr("ed.pass.nosound"))
             return
+        if not self.win._confirm(tr("xfer.to.cut.title"), tr("xfer.to.cut.ask"), tr("btn.continue")):
+            return
         import tempfile
         self.preview.pause()
         d = os.path.join(tempfile.gettempdir(), "autocut_pass")
@@ -1861,6 +1874,19 @@ class EditorPage(QWidget):
             self.timeline.selected = None
         self.project.clips.extend(clips)
         self._after_project_change()
+        self.timeline.fit_all()
+
+    def replace_all(self, clips):
+        """Remplace TOUT le contenu du montage (elements et reglages de pistes) par ces elements. Ctrl+Z revient en arriere."""
+        self.push_undo()
+        p = self.project
+        p.clips = list(clips)
+        for attr in ("track_gain", "track_mute", "track_solo", "track_media", "track_h", "duck_targets", "track_role"):
+            setattr(p, attr, {})
+        self.sel = None
+        self.timeline.selected = None
+        self.preview.seek(0)
+        self._after_project_change(full=True)
         self.timeline.fit_all()
 
     # ------------------------------------------------------------ projet
@@ -2212,6 +2238,32 @@ class EditorPage(QWidget):
         if box.clickedButton() is open_b and hasattr(os, "startfile"):
             os.startfile(os.path.dirname(path))
 
+    def export_fcpxml(self):
+        """Ecrit le montage au format FCPXML (Final Cut Pro, DaVinci Resolve : Fichier > Importer > Timeline)."""
+        if not self.project.clips:
+            QMessageBox.information(self.win, tr("ed.fcpxml.title"), tr("ed.xml.empty"))
+            return
+        base = self.project.name or tr("ed.project.name")
+        default = unique_path(os.path.dirname(self.project.path) if self.project.path else self._default_dir(), base, ".fcpxml")
+        path, _ = QFileDialog.getSaveFileName(self.win, tr("ed.fcpxml.title"), default, "FCPXML (*.fcpxml)")
+        if not path:
+            return
+        try:
+            xml, skipped = build_project_fcpxml(self.project, base)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(xml)
+        except OSError as e:
+            QMessageBox.warning(self.win, tr("dlg.err.title"), str(e))
+            return
+        msg = tr("ed.fcpxml.done", path=path) + (tr("ed.xml.skipped", n=skipped) if skipped else "")
+        self.win.status(tr("st.export.done", path=path))
+        box = QMessageBox(QMessageBox.Information, tr("dlg.done.title"), msg, QMessageBox.NoButton, self.win)
+        open_b = box.addButton(tr("btn.openfolder"), QMessageBox.AcceptRole)
+        box.addButton(tr("btn.close"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_b and hasattr(os, "startfile"):
+            os.startfile(os.path.dirname(path))
+
     # ------------------------------------------------------------ export video
     def export_video(self):
         if self.worker is not None and self.worker.isRunning():
@@ -2226,7 +2278,7 @@ class EditorPage(QWidget):
                                               unique_path(d, self.project.name or tr("ed.project.name"), ".mp4"), "MP4 (*.mp4)")
         if not path:
             return
-        self.worker = RenderWorker(self.project, path)
+        self.worker = RenderWorker(self.project, path, stems=self.chk_multi.isChecked())
         self.worker.progress.connect(self._on_progress)
         self.worker.done.connect(self._export_done)
         self.worker.failed.connect(self._export_failed)

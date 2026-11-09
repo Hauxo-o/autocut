@@ -6,12 +6,74 @@ import copy
 import json
 import re
 import tempfile
+import time
 
 from . import duck
 from .ffmpeg_tools import _NOWIN, find_tool
+from .i18n import tr
 from .project import FONTS, track_num
 
 WIN_FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+
+
+def log_path():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "AutoCut", "export_error.log")
+
+
+def _log_error(cmd, err):
+    """Garde le detail technique d'un echec d'export dans un fichier (pour qu'on puisse le retrouver et le corriger)."""
+    try:
+        os.makedirs(os.path.dirname(log_path()), exist_ok=True)
+        with open(log_path(), "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+            f.write(" ".join(f'"{a}"' if " " in str(a) else str(a) for a in cmd)[:4000] + "\n")
+            f.write(err[-6000:] + "\n")
+    except OSError:
+        pass
+
+
+def explain_error(err):
+    """Message simple (dans la langue de l'appli) pour une erreur FFmpeg ou systeme, avec le detail technique a la fin."""
+    low = err.lower()
+    if "no such file" in low or "does not exist" in low or "error opening input" in low:
+        key = "exp.err.missing"
+    elif "permission denied" in low or "access is denied" in low or "winerror 5" in low or "winerror 32" in low:
+        key = "exp.err.locked"
+    elif "no space left" in low or "disk full" in low:
+        key = "exp.err.space"
+    else:
+        key = "exp.err.generic"
+    last = [ln for ln in err.strip().splitlines() if ln.strip()][-3:]
+    return tr(key, log=log_path()) + "\n\n" + "\n".join(last)[-500:]
+
+
+def preflight(project, out_path):
+    """Verifie avant l'export ce qui peut le faire echouer : fichiers sources absents, dossier non inscriptible,
+    disque presque plein, ecriture sur un fichier utilise dans le montage. Leve RuntimeError avec un message clair."""
+    missing = sorted({os.path.basename(c.path) for c in project.clips if c.path and c.kind != "text" and not os.path.isfile(c.path)})
+    if missing:
+        raise RuntimeError(tr("exp.err.missing.files", files=", ".join(missing[:6]) + (" ..." if len(missing) > 6 else "")))
+    out_abs = os.path.abspath(out_path)
+    for c in project.clips:
+        if c.path and os.path.abspath(c.path) == out_abs:
+            raise RuntimeError(tr("exp.err.overwrite", name=os.path.basename(out_abs)))
+    folder = os.path.dirname(out_abs)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        probe_file = os.path.join(folder, ".autocut_write_test")
+        with open(probe_file, "w") as f:
+            f.write("ok")
+        os.remove(probe_file)
+    except OSError as e:
+        raise RuntimeError(tr("exp.err.folder", folder=folder, err=str(e))) from e
+    try:
+        free = shutil.disk_usage(folder).free
+        need = int(project.duration() * 2_000_000)           # estimation grossiere : environ 16 Mbit/s
+        if free < need:
+            raise RuntimeError(tr("exp.err.space.est", free=f"{free / 1e9:.1f}", need=f"{need / 1e9:.1f}"))
+    except OSError:
+        pass
 
 
 def _num(v):
@@ -73,7 +135,13 @@ def _parse_loudnorm(err):
     return d
 
 
-def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=False):
+def stem_tracks(project):
+    """Pistes qui donnent une piste audio separee dans un MP4 multipiste (celles qui ont du son audible)."""
+    p = project.expanded()
+    return sorted({c.track for c in p.clips if c.path and c.has_sound() and p.gain_db(c) is not None})
+
+
+def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=False, stems=False):
     """Construit le graphe de filtres FFmpeg. Renvoie (arguments -i, script, duree totale).
     audio_only : seulement le son (pour mesurer le volume). loudnorm : "measure" ou les valeurs mesurees."""
     project = project.expanded()                     # les clips composes deviennent leurs passages
@@ -188,6 +256,36 @@ def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=Fal
                              f"apad=whole_dur={_num(total)}[aout{k}]")
             else:
                 lines.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={_num(total)}[aout{k}]")
+    elif labels and stems:                           # multipiste : un flux par piste (avec ducking) + le mixage complet
+        tracks = [t for t in names if track_labels.get(t)]
+        tg = set(duck.target_tracks(project)) if duck.active(project) else set()
+        env = duck.envelope(project, total) if tg & set(tracks) else None
+        dtracks = [t for t in tracks if t in tg] if env is not None else []
+        env_label = {}
+        if dtracks:
+            wav = os.path.join(workdir, "duck_env.wav")
+            duck.write_wav(env, wav, total)
+            inputs += ["-i", wav]
+            lines.append(f"[{n_in}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[dce]")
+            n_in += 1
+            if len(dtracks) == 1:
+                env_label[dtracks[0]] = "[dce]"
+            else:
+                outs = "".join(f"[dce{i}]" for i in range(len(dtracks)))
+                lines.append(f"[dce]asplit={len(dtracks)}{outs}")
+                env_label = {t: f"[dce{i}]" for i, t in enumerate(dtracks)}
+        mixin = []
+        for k, t in enumerate(tracks):
+            ls = track_labels[t]
+            lines.append("".join(ls) + f"amix=inputs={len(ls)}:duration=longest:normalize=0,"
+                         f"aformat=sample_fmts=fltp:channel_layouts=stereo,apad=whole_dur={_num(total)}[tm{k}]")
+            src = f"[tm{k}]"
+            if t in env_label:
+                lines.append(f"[tm{k}]{env_label[t]}amultiply[td{k}]")
+                src = f"[td{k}]"
+            lines.append(f"{src}asplit=2[mi{k}][st{k}]")
+            mixin.append(f"[mi{k}]")
+        lines.append("".join(mixin) + f"amix=inputs={len(mixin)}:duration=longest:normalize=0[aout]")
     elif labels:
         if duck.active(project):                      # ducking : les pistes baissees passent par la courbe de la voix
             tg = set(duck.target_tracks(project))
@@ -214,9 +312,9 @@ def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=Fal
     return inputs, ";\n".join(lines), total
 
 
-def build_command(project, out_path, workdir, loudnorm=None, per_track=False):
+def build_command(project, out_path, workdir, loudnorm=None, per_track=False, stems=False):
     """Renvoie (commande ffmpeg, duree totale). per_track : version legere (apercu) avec un flux son par piste."""
-    inputs, script, total = build_graph(project, workdir, loudnorm=loudnorm, per_track=per_track)
+    inputs, script, total = build_graph(project, workdir, loudnorm=loudnorm, per_track=per_track, stems=stems)
     with open(os.path.join(workdir, "graph.txt"), "w", encoding="utf-8") as f:
         f.write(script)
     head = [find_tool("ffmpeg"), "-y", "-hide_banner", "-v", "error", "-nostats", "-progress", "pipe:1"] + inputs
@@ -228,9 +326,16 @@ def build_command(project, out_path, workdir, loudnorm=None, per_track=False):
                ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", _num(project.fps),
                 "-c:a", "aac", "-b:a", "96k", "-t", _num(total), "-movflags", "+faststart", out_path])
         return cmd, total
-    cmd = (head + ["-/filter_complex", "graph.txt", "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-r", _num(project.fps),
-                   "-c:a", "aac", "-b:a", "192k", "-t", _num(total), "-movflags", "+faststart", out_path])
+    maps, meta = ["-map", "[vout]", "-map", "[aout]"], []
+    if stems:                                        # flux 1 = mixage complet, puis une piste audio par piste du montage
+        names = [t for t in stem_tracks(project)]
+        meta += ["-metadata:s:a:0", "title=Mix", "-metadata:s:a:0", "handler_name=Mix", "-disposition:a:0", "default"]
+        for k, t in enumerate(names):
+            maps += ["-map", f"[st{k}]"]
+            meta += [f"-metadata:s:a:{k + 1}", f"title={t}", f"-metadata:s:a:{k + 1}", f"handler_name={t}"]
+    cmd = (head + ["-/filter_complex", "graph.txt"] + maps +
+           ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-r", _num(project.fps),
+            "-c:a", "aac", "-b:a", "192k", "-t", _num(total), "-movflags", "+faststart"] + meta + [out_path])
     return cmd, total
 
 
@@ -253,7 +358,8 @@ def _run_ffmpeg(cmd, work, total, progress, should_stop):
     with open(errfile, encoding="utf-8", errors="replace") as ef:
         err = ef.read()
     if code != 0:
-        raise RuntimeError(err.strip()[-800:] or "ffmpeg a echoue")
+        _log_error(cmd, err)
+        raise RuntimeError(explain_error(err or "ffmpeg"))
     return err
 
 
@@ -324,31 +430,55 @@ def render_pass(project, out_path, progress=None, should_stop=None):
     return out_path
 
 
-def render(project, out_path, progress=None, should_stop=None):
+def render(project, out_path, progress=None, should_stop=None, stems=False):
     """Rend le montage dans out_path. progress(0..1) est appele pendant le rendu.
-    Si project.normalize : le son final est d'abord mesure, puis amene au volume cible (norme YouTube par defaut)."""
+    Si project.normalize : le son final est d'abord mesure, puis amene au volume cible (norme YouTube par defaut).
+    stems=True : MP4 multipiste (flux 1 = mixage complet, puis une piste audio par piste du montage)."""
     if not project.clips:
         raise ValueError("empty")
     out_path = os.path.abspath(out_path)
-    for c in project.clips:
-        if c.path and os.path.abspath(c.path) == out_path:
-            raise ValueError("Securite : on n'ecrit jamais sur un fichier utilise dans le montage.")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    preflight(project, out_path)
     measured, base = None, 0.0
-    if getattr(project, "normalize", False) and has_sound(project):
+    if stems and getattr(project, "normalize", False) and has_sound(project):
+        # multipiste : la normalisation devient UN gain commun a toutes les pistes (l'equilibre entre pistes est garde)
+        base = 0.2
+        m = measure_loudness(project, progress=(lambda p: progress(0.2 * p)) if progress else None, should_stop=should_stop)
+        project = copy.copy(project)
+        project.duck_targets = dict(project.duck_targets)
+        if m and m.get("I") is not None and m["I"] > -70:
+            off = project.norm_lufs - m["I"]
+            if m.get("TP") is not None:
+                off = min(off, project.norm_tp - TP_MARGIN - m["TP"])
+            project.master_db = project.master_db + off
+            project.duck_thr = project.duck_thr + off                # le seuil de voix suit le gain
+        else:
+            base = 0.0
+        project.normalize = False
+    elif getattr(project, "normalize", False) and has_sound(project):
         base = 0.2
         measured = measure_loudness(project, progress=(lambda p: progress(0.2 * p)) if progress else None,
                                     should_stop=should_stop)
         if measured is None:
             base = 0.0
     work = tempfile.mkdtemp(prefix="autocut_render_")
+    root, ext = os.path.splitext(out_path)
+    part = root + ".part" + ext                      # on ecrit dans un fichier temporaire : jamais de MP4 a moitie fini
     try:
-        cmd, total = build_command(project, out_path, work, loudnorm=measured)
+        cmd, total = build_command(project, part, work, loudnorm=measured, stems=stems)
         _run_ffmpeg(cmd, work, total, (lambda p: progress(base + (1 - base) * p)) if progress else None, should_stop)
+        try:
+            os.replace(part, out_path)
+        except OSError as e:
+            raise RuntimeError(explain_error(str(e) + " permission denied")) from e
         if progress:
             progress(1.0)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+        if os.path.isfile(part):
+            try:
+                os.remove(part)
+            except OSError:
+                pass
     return out_path
 
 

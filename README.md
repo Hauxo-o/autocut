@@ -61,3 +61,8 @@ Retire les passages ou il ne se passe rien : silence sur les pistes cochees (ta 
 
 ### Mixage automatique (onglet Son)
 Sous chaque fader, choisis le rôle de la piste (Voix, Jeu, Musique ; par défaut Audio 1 = Voix, 2 = Jeu, 3 = Musique). Le bouton « Régler les volumes automatiquement » mesure chaque piste seule et règle son fader pour atteindre le volume cible de son rôle (par défaut Voix −16, Jeu −24, Musique −30 LUFS, modifiables) ; la normalisation YouTube amène ensuite le tout à −14 LUFS. Ctrl+Z annule.
+
+### Onglets, transferts et exports
+- **Couper les silences** : un seul export, « Envoyer dans le montage ». Cela **remplace** le contenu du Montage (confirmation demandée ; Ctrl+Z dans le Montage revient en arrière).
+- **Montage** : exporter en **MP4** (option « multipiste » : flux 1 = mixage complet, puis une piste audio par piste du montage, avec ducking et volumes), en **XML** (DaVinci/Final Cut 7) ou en **FCPXML** ; ou **transférer** le montage vers « Couper les silences » (remplace ce qui y est ouvert, confirmation demandée) puis « Appliquer au montage » (confirmation aussi).
+- En cas d'échec d'export, le détail technique est écrit dans `%APPDATA%\AutoCut\export_error.log`. L'export vérifie avant de commencer (fichiers présents, dossier inscriptible, place sur le disque, pas d'écrasement d'un fichier source) et écrit d'abord dans un fichier `.part` renommé à la fin.

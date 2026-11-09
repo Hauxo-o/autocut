@@ -234,3 +234,90 @@ def build_project_xml(project, name="Montage"):
         f'</timecode><media>{video}{audio}</media></sequence></xmeml>\n'
     )
     return xml, skipped
+
+
+# ====================================================================== FCPXML (Final Cut Pro / DaVinci Resolve)
+def _fcp_rate(fps):
+    """(numerateur, denominateur) de la cadence : 59.94 -> (60000, 1001), 30 -> (30, 1)."""
+    f = float(fps)
+    for n in (24, 25, 30, 48, 50, 60, 120):
+        if abs(f - n) < 0.01:
+            return n, 1
+        if abs(f - n * 1000 / 1001) < 0.01:
+            return n * 1000, 1001
+    return int(round(f)), 1
+
+
+def build_project_fcpxml(project, name="Montage"):
+    """FCPXML 1.9 du MONTAGE : toutes les pistes (images en haut, sons en bas) sont des elements connectes a un plan de
+    base de la duree du montage ; les clips composes sont coupes en passages ; volumes de clip, de piste et master en
+    niveau audio ; pistes coupees desactivees. Les textes ne sont pas transferes.
+    Renvoie (texte FCPXML, nombre d'elements non transferes)."""
+    num, den = _fcp_rate(project.fps)
+    p = project.expanded()
+    skipped = sum(1 for c in project.clips if c.kind == "text")
+
+    def tm(t):                                    # secondes -> temps FCPXML (nombre entier d'images)
+        return f"{int(round(max(0.0, t) * num / den)) * den}/{num}s"
+
+    files = {}                                    # chemin -> infos
+    for c in p.clips:
+        if c.kind == "text" or not c.path:
+            continue
+        key = c.path + "|a" if c.kind == "audio" else c.path          # le son d'un fichier video = un "asset" sans image
+        f = files.setdefault(key, dict(path=c.path, name=os.path.basename(c.path), dur=0.0, n_audio=1, video=False, still=False))
+        f["dur"] = max(f["dur"], c.src_duration if c.src_duration > 0 else c.src_in + c.duration)
+        if c.kind in ("video", "image"):
+            f["video"] = True
+            f["still"] = f["still"] or c.kind == "image"
+        if c.kind == "audio":
+            f["n_audio"] = max(f["n_audio"], c.audio_index + 1)
+    ids, res = {}, []
+    res.append(f'<format id="r1" name="Montage" frameDuration="{den}/{num}s" width="{project.width}" height="{project.height}" '
+               f'colorSpace="1-1-1 (Rec. 709)"/>')
+    for i, (key, f) in enumerate(files.items(), 2):
+        path = f["path"]
+        ids[key] = f"r{i}"
+        dur = 3600.0 if f["still"] else max(f["dur"], 0.1)
+        attrs = (f'id="r{i}" name="{escape(f["name"])}" start="0s" duration="{tm(dur)}" format="r1" '
+                 f'hasAudio="{0 if f["still"] else 1}" hasVideo="{1 if f["video"] else 0}" '
+                 f'audioSources="{f["n_audio"]}" audioChannels="{2 * f["n_audio"]}" audioRate="48000"')
+        res.append(f'<asset {attrs} src="{escape(_fileurl(path))}"/>')
+
+    def vol_xml(c):
+        db = c.volume_db + project.track_gain.get(c.track, 0.0) + project.master_db
+        return f'<adjust-volume amount="{db:.2f}dB"/>' if abs(db) > 0.01 else ""
+
+    total = project.duration()
+    lanes = ""
+    vt = p.visual_tracks()                       # V1 = lane 1, V2 = lane 2 ... (au-dessus)
+    for t in vt:
+        lane = track_num_of(t)
+        off = "" if not project.track_mute.get(t) else ' enabled="0"'
+        for c in sorted((c for c in p.clips if c.track == t and c.kind in ("video", "image")), key=lambda c: c.start):
+            mute_audio = '<adjust-volume amount="-96dB"/>' if c.kind == "video" else ""
+            lanes += (f'<asset-clip ref="{ids[c.path]}" lane="{lane}" offset="{tm(c.start)}" name="{escape(c.label())}" '
+                      f'start="{tm(c.src_in if c.kind == "video" else 0)}" duration="{tm(c.duration)}" format="r1"{off}>{mute_audio}</asset-clip>')
+    for t in p.audio_tracks():
+        lane = -track_num_of(t)                   # A1 = lane -1, A2 = lane -2 ...
+        off = ' enabled="0"' if not project.track_active(t) else ""
+        for c in sorted((c for c in p.clips if c.track == t and c.kind == "audio"), key=lambda c: c.start):
+            ch = f'<audio-channel-source srcCh="{2 * c.audio_index + 1}, {2 * c.audio_index + 2}" outCh="L, R" role="dialogue" active="1"/>'
+            en = ' enabled="0"' if (c.mute_audio or off) else ""
+            lanes += (f'<asset-clip ref="{ids[c.path + '|a']}" lane="{lane}" offset="{tm(c.start)}" name="{escape(c.label())}" '
+                      f'start="{tm(c.src_in)}" duration="{tm(c.duration)}" audioRole="dialogue"{en}>{ch}{vol_xml(c)}</asset-clip>')
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n<fcpxml version="1.9">'
+           f'<resources>{"".join(res)}</resources>'
+           f'<library><event name="{escape(name)}"><project name="{escape(name)}">'
+           f'<sequence format="r1" duration="{tm(total)}" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">'
+           f'<spine><gap name="Montage" offset="0s" start="0s" duration="{tm(total)}">{lanes}</gap></spine>'
+           '</sequence></project></event></library></fcpxml>\n')
+    return xml, skipped
+
+
+def track_num_of(t):
+    return int(t[1:])
+
+
+def _fileurl(path):
+    return "file:///" + quote(os.path.abspath(path).replace("\\", "/"), safe="/:")

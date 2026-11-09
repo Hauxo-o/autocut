@@ -619,8 +619,10 @@ class MainWindow(QMainWindow):
         for b in (self.btn_export, self.btn_mp4, self.btn_send):          # les 3 exports ont exactement le meme aspect
             b.setStyleSheet("padding: 11px 14px; font-size: 11pt;")
             b.setCursor(Qt.PointingHandCursor)
-        for w in (self.rb_mark, self.rb_remove, self.chk_sep, self.btn_export, self.btn_mp4, self.btn_send):
-            v4.addWidget(w)
+        self.btn_send.setObjectName("primary")
+        for w in (self.rb_mark, self.rb_remove, self.chk_sep, self.btn_export, self.btn_mp4):
+            w.hide()                                      # les exports XML / MP4 se font maintenant depuis le Montage
+        v4.addWidget(self.btn_send)
         rv.addWidget(g4)
 
         scroll = QScrollArea()
@@ -835,7 +837,7 @@ class MainWindow(QMainWindow):
             # 1re visite du montage avec une video analysee : les coupes y sont deja appliquees
             self._auto_sent = self.media["path"]
             if not self.editor.project.clips:
-                self.send_to_editor(go=False)
+                self.send_to_editor(go=False, confirm=False)
         self.stack.setCurrentIndex(i)
         self.tab_buttons[i].setChecked(True)
         self.btn_open.setVisible(i == 0)
@@ -864,8 +866,9 @@ class MainWindow(QMainWindow):
             segs.append((pos, total))
         return [(a, b) for a, b in segs if (b - a) / fps >= MIN_DUR]
 
-    def send_to_editor(self, go=True):
-        """Place les passages gardes (apres les coupes) dans l'onglet Montage : video + toutes les pistes audio."""
+    def send_to_editor(self, go=True, confirm=True):
+        """Envoie dans l'onglet Montage les passages gardes (apres les coupes) : video + toutes les pistes audio.
+        Cela REMPLACE le contenu du Montage, apres confirmation."""
         if not self.media:
             return
         if self.pass_rev is not None:                    # passe sur le montage : on retire les silences de la timeline
@@ -875,13 +878,15 @@ class MainWindow(QMainWindow):
         if not segs:
             return
         ed = self.editor
+        n = len(ed.project.clips)
+        if confirm:
+            text = tr("xfer.to.ed.replace", n=n) if n else tr("xfer.to.ed.ask")
+            if not self._confirm(tr("xfer.to.ed.title"), text, tr("btn.continue")):
+                return
         origin = "cut:" + m["path"]
-        others = [c for c in ed.project.clips if c.origin != origin]
-        if not others:
-            ed._adopt_format({"width": m["width"], "height": m["height"], "fps": float(m["fps"])})
-        cursor = max((c.end for c in others if c.track in ("V1", "A1", "A2", "A3")), default=0.0)
-        clips = make_cut_clips(m, segs, cursor, self.cb_mix.currentData() or 0, origin)
-        ed.add_clips(clips, replace_origin=origin)
+        ed._adopt_format({"width": m["width"], "height": m["height"], "fps": float(m["fps"])})
+        clips = make_cut_clips(m, segs, 0.0, self.cb_mix.currentData() or 0, origin)
+        ed.replace_all(clips)
         self._auto_sent = m["path"]
         if go:
             self.set_tab(1)
@@ -1137,6 +1142,8 @@ class MainWindow(QMainWindow):
 
     def apply_pass(self):
         """'Appliquer au montage' : coupe definitivement tous les passages rouges, puis retour dans le Montage."""
+        if not self._confirm(tr("xfer.apply.title"), tr("xfer.apply.ask"), tr("btn.continue")):
+            return
         if self.cut_definitively("all") is not None:
             self.set_tab(1)
 
