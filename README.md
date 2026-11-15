@@ -73,4 +73,6 @@ Sous chaque fader, choisis le rôle de la piste (Voix, Jeu, Musique ; par défau
 - **Erreurs** : chaque message dit le PROBLÈME, QUE FAIRE, puis le détail technique en bas (`autocut/errors.py`). Le détail complet est dans `%APPDATA%\AutoCut\export_error.log`.
 
 ### Fusionner des éléments (Ctrl+G)
-Sélectionne plusieurs éléments (rectangle de sélection ou Ctrl+clic) puis **Ctrl+G** (ou le bouton « Fusionner les éléments choisis ») : ceux qui se suivent sans trou, sur la même piste et depuis le même fichier, deviennent un seul élément sur la timeline. L'image et le son ne changent pas ; Ctrl+Z annule (`ops.merge_clips`).
+Sélectionne plusieurs éléments (rectangle de sélection ou Ctrl+clic) puis **Ctrl+G** (ou le bouton « Fusionner les éléments choisis ») : ceux qui se suivent sans trou sur une même piste deviennent UN seul élément par piste.
+- Même fichier : fusion sans perte (élément composé).
+- Fichiers différents (plusieurs musiques ou vidéos à la suite) : après confirmation, Auto Cut crée un nouveau fichier (`Fusions/` à côté du projet : son .m4a AAC 256 kbit/s, vidéo .mp4 haute qualité). Les originaux ne sont jamais touchés ; Ctrl+Z annule (`ops.plan_merge`, `render.render_merged`).

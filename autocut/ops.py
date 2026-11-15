@@ -125,18 +125,18 @@ def _merge_key(c):
     return (c.kind, c.track, c.path, c.audio_index, c.volume_db, c.mute_audio, c.has_audio, c.scale, c.pos_x, c.pos_y)
 
 
-def merge_clips(project, clips, tol=0.02):
-    """Fusionne des elements video / son qui se suivent bout a bout (meme piste, meme fichier, memes reglages) en UN seul
-    element compose (ses passages = ceux des elements fusionnes). Le rendu, le son et la forme d'onde ne changent pas :
-    seul le nombre d'elements sur la timeline diminue.
-    Renvoie (nombre d'elements obtenus, nombre d'elements supprimes, nombre d'elements non fusionnables) ;
-    le dernier = elements choisis qui n'ont pas de voisin a fusionner (autre fichier, autre piste, trou entre eux...)."""
+def plan_merge(clips, tol=0.02):
+    """Repere les groupes d'elements a fusionner : video ou son, meme piste, qui se suivent sans trou.
+    Renvoie (lossless, bounce, skipped) :
+      lossless : groupes qui viennent du MEME fichier avec les memes reglages -> un element compose, sans perte ;
+      bounce   : groupes qui viennent de fichiers DIFFERENTS -> il faut creer un nouveau fichier (son ou video) ;
+      skipped  : nombre d'elements choisis sans voisin a fusionner."""
     groups = {}
     for c in clips:
-        if c.kind in ("video", "audio") and c.path:
-            groups.setdefault(_merge_key(c), []).append(c)
-    merged, removed, touched = 0, 0, set()
-    for key, items in groups.items():
+        if c.kind in ("video", "audio") and c.path and not (c.kind == "audio" and c.mute_audio):
+            groups.setdefault((c.kind, c.track), []).append(c)
+    lossless, bounce, used = [], [], set()
+    for items in groups.values():
         items.sort(key=lambda c: c.start)
         runs, cur = [], [items[0]]
         for c in items[1:]:
@@ -149,23 +149,43 @@ def merge_clips(project, clips, tol=0.02):
         for run in runs:
             if len(run) < 2:
                 continue
-            segs = []
-            for c in run:
-                for a, b in (c.segments or [[c.src_in, c.src_in + c.duration]]):
-                    if segs and abs(segs[-1][1] - a) <= 1e-3:            # deux passages qui se touchent dans le fichier : un seul
-                        segs[-1][1] = b
-                    else:
-                        segs.append([a, b])
-            first = run[0]
-            first.duration = sum(b - a for a, b in segs)
-            if len(segs) == 1:
-                first.segments, first.src_in = [], segs[0][0]
-            else:
-                first.segments, first.src_in = segs, segs[0][0]
-            ids = {c.id for c in run[1:]}
-            project.clips = [c for c in project.clips if c.id not in ids]
-            merged += 1
-            removed += len(run) - 1
-            touched |= {c.id for c in run}
-    skipped = sum(1 for c in clips if c.id not in touched)
+            same = len({_merge_key(c) for c in run}) == 1
+            (lossless if same else bounce).append(run)
+            used |= {c.id for c in run}
+    return lossless, bounce, sum(1 for c in clips if c.id not in used)
+
+
+def merge_runs_lossless(project, runs):
+    """Fusionne chaque groupe (meme fichier) en UN element compose : l'image et le son sont identiques, seul le nombre
+    d'elements diminue. Renvoie (nombre d'elements obtenus, nombre d'elements supprimes)."""
+    merged = removed = 0
+    for run in runs:
+        segs = []
+        for c in run:
+            for a, b in (c.segments or [[c.src_in, c.src_in + c.duration]]):
+                if segs and abs(segs[-1][1] - a) <= 1e-3:            # deux passages qui se touchent dans le fichier : un seul
+                    segs[-1][1] = b
+                else:
+                    segs.append([a, b])
+        first = run[0]
+        first.duration = sum(b - a for a, b in segs)
+        first.segments, first.src_in = ([], segs[0][0]) if len(segs) == 1 else (segs, segs[0][0])
+        ids = {c.id for c in run[1:]}
+        project.clips = [c for c in project.clips if c.id not in ids]
+        merged += 1
+        removed += len(run) - 1
+    return merged, removed
+
+
+def merge_clips(project, clips, tol=0.02):
+    """Fusion sans perte seulement (meme fichier). Renvoie (obtenus, supprimes, non fusionnes)."""
+    lossless, _bounce, skipped = plan_merge(clips, tol)
+    merged, removed = merge_runs_lossless(project, lossless)
     return merged, removed, skipped
+
+
+def replace_run(project, run, new_clip):
+    """Remplace un groupe d'elements par UN nouvel element (fusion par creation de fichier)."""
+    ids = {c.id for c in run}
+    project.clips = [c for c in project.clips if c.id not in ids]
+    project.clips.append(new_clip)

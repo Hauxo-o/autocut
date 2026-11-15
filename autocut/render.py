@@ -12,7 +12,7 @@ from . import duck
 from .ffmpeg_tools import _NOWIN, find_tool
 from .errors import UserError, explain
 from .i18n import tr
-from .project import FONTS, track_num
+from .project import FONTS, Project, track_num
 
 WIN_FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
 
@@ -132,7 +132,7 @@ def stem_tracks(project):
     return sorted({c.track for c in p.clips if c.path and c.has_sound() and p.gain_db(c) is not None})
 
 
-def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=False, stems=False):
+def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=False, stems=False, video_only=False):
     """Construit le graphe de filtres FFmpeg. Renvoie (arguments -i, script, duree totale).
     audio_only : seulement le son (pour mesurer le volume). loudnorm : "measure" ou les valeurs mesurees."""
     project = project.expanded()                     # les clips composes deviennent leurs passages
@@ -298,6 +298,8 @@ def build_graph(project, workdir, audio_only=False, loudnorm=None, per_track=Fal
         lines.append(mix + (f",{_loudnorm_filter(project, loudnorm)}" if loudnorm is not None else "") + "[aout]")
     else:
         lines.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={_num(total)}[aout]")
+    if video_only:
+        lines = lines[:audio_start]                      # seulement l'image
     if audio_only:
         lines = lines[audio_start:]                      # les entrees video restent ouvertes mais ne servent a rien
     return inputs, ";\n".join(lines), total
@@ -472,6 +474,49 @@ def render(project, out_path, progress=None, should_stop=None, stems=False):
             except OSError:
                 pass
     return out_path
+
+
+# ====================================================================== fusion d'elements de fichiers differents
+def render_merged(project, clips, kind, out_path, progress=None, should_stop=None):
+    """Cree UN fichier avec ces elements (qui se suivent sur une piste) mis bout a bout : un .m4a (son) ou un .mp4 sans son
+    (video). Les volumes des elements sont integres ; les originaux ne sont pas touches."""
+    t0 = min(c.start for c in clips)
+    pp = Project()
+    pp.width, pp.height, pp.fps = project.width, project.height, project.fps
+    pp.normalize = False
+    letter = "V" if kind == "video" else "A"
+    for c in clips:
+        n = copy.deepcopy(c)
+        n.start, n.track, n.link = c.start - t0, letter + "1", ""
+        if kind == "video":
+            n.mute_audio = True
+        pp.clips.append(n)
+    out_path = os.path.abspath(out_path)
+    preflight(pp, out_path)
+    work = tempfile.mkdtemp(prefix="autocut_merge_")
+    try:
+        inputs, script, total = build_graph(pp, work, audio_only=(kind != "video"), video_only=(kind == "video"))
+        with open(os.path.join(work, "graph.txt"), "w", encoding="utf-8") as f:
+            f.write(script)
+        head = [find_tool("ffmpeg"), "-y", "-hide_banner", "-v", "error", "-nostats", "-progress", "pipe:1"] + inputs
+        if kind == "video":
+            tail = ["-map", "[vout]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-r", _num(pp.fps),
+                    "-an", "-t", _num(total), "-movflags", "+faststart", out_path]
+        else:
+            tail = ["-map", "[aout]", "-c:a", "aac", "-b:a", "256k", "-t", _num(total), out_path]
+        _run_ffmpeg(head + ["-/filter_complex", "graph.txt"] + tail, work, total, progress, should_stop)
+        if progress:
+            progress(1.0)
+    except BaseException:
+        if os.path.isfile(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return out_path, total
 
 
 # ====================================================================== MP4 avec les coupes appliquees

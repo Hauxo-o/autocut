@@ -1605,21 +1605,80 @@ class EditorPage(QWidget):
         return self.apply_cut_ranges(merged) if merged else 0.0
 
     def merge_selected(self):
-        """Ctrl+G : fusionne les elements choisis qui se suivent (meme piste, meme fichier) en un seul element sur la
-        timeline. Rien ne change a l'image ni au son. Ctrl+Z annule."""
+        """Ctrl+G : fusionne les elements choisis qui se suivent sur une meme piste en UN seul element.
+        Meme fichier : sans perte (element compose). Fichiers differents : un nouveau fichier est cree (son .m4a, video
+        .mp4), apres confirmation ; les originaux ne sont jamais touches. Ctrl+Z annule."""
+        w = getattr(self, "_merge_worker", None)
+        if w is not None and w.isRunning():
+            w.stop()
+            return
         sel = self.sel_group()
         if len(sel) < 2:
             self.win.status(tr("merge.need"))
             return
-        trial = deepcopy(self.project)
-        by_id = {c.id for c in sel}
-        n_ok, n_removed, _skip = ops.merge_clips(trial, [c for c in trial.clips if c.id in by_id])
-        if not n_removed:
+        ids = {c.id for c in sel}
+        lossless, bounce, skipped = ops.plan_merge([c for c in self.project.clips if c.id in ids])
+        if not lossless and not bounce:
             self.win.status(tr("merge.none"))
             return
+        if not bounce:
+            self.push_undo()
+            n_ok, n_removed = ops.merge_runs_lossless(self.project, lossless)
+            self._merge_finish(n_ok, n_removed, skipped)
+            return
+        total = sum(sum(c.duration for c in run) for run in bounce)
+        folder = os.path.join(os.path.dirname(self.project.path) if self.project.path else self._default_dir(), "Fusions")
+        if not self.win._confirm(tr("merge.title"), tr("merge.bounce.ask", n=len(bounce), min=f"{total / 60:.1f}", folder=folder),
+                                 tr("btn.continue")):
+            return
+        self.preview.pause()
+        proj, rev = deepcopy(self.project), self._rev
+        runs = [[c for c in proj.clips if c.id in {x.id for x in run}] for run in bounce]
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+
+        def job(prog, stop):
+            out = []
+            for k, run in enumerate(runs):
+                run.sort(key=lambda c: c.start)
+                kind = run[0].kind
+                path = os.path.join(folder, f"Fusion {run[0].track} {stamp}-{k + 1}." + ("mp4" if kind == "video" else "m4a"))
+                _p, dur = render.render_merged(proj, run, kind, path, progress=lambda x, k=k: prog((k + x) / len(runs)),
+                                               should_stop=stop)
+                out.append((k, path, dur))
+            return out
+
+        self._merge_worker = FuncWorker(job)
+        self._merge_worker.progress.connect(lambda p_: self.win.task_update(p_, tr("merge.running", pct=f"{p_ * 100:.0f}")))
+        self._merge_worker.done.connect(lambda res: self._merge_done(res, bounce, lossless, skipped, rev))
+        self._merge_worker.failed.connect(self._merge_failed)
+        self.win.task_begin(tr("merge.running", pct="0"), cancel=self._merge_worker.stop)
+        self._merge_worker.start()
+
+    def _merge_failed(self, msg):
+        self.win.task_end()
+        if msg:
+            QMessageBox.warning(self.win, tr("merge.title"), msg)
+
+    def _merge_done(self, res, bounce, lossless, skipped, rev):
+        self.win.task_end()
+        if rev != self._rev:                                  # le montage a change pendant la creation des fichiers
+            QMessageBox.information(self.win, tr("merge.title"), tr("merge.changed"))
+            return
         self.push_undo()
-        keep = None
-        n_ok, n_removed, skipped = ops.merge_clips(self.project, [c for c in self.project.clips if c.id in by_id])
+        n_ok, n_removed = ops.merge_runs_lossless(self.project, lossless)
+        for k, path, dur in res:
+            run = bounce[k]
+            c0 = min(run, key=lambda c: c.start)
+            kind = c0.kind
+            new = Clip(kind, c0.track, c0.start, dur, path=path, src_in=0.0, src_duration=dur,
+                       name=tr("merge.name", track=c0.track), audio_index=0, has_audio=(kind == "audio"),
+                       mute_audio=(kind == "video"), link=c0.link)
+            ops.replace_run(self.project, run, new)
+            n_ok += 1
+            n_removed += len(run) - 1
+        self._merge_finish(n_ok, n_removed, skipped)
+
+    def _merge_finish(self, n_ok, n_removed, skipped):
         self.sel = None
         self.timeline.selected = None
         self._after_project_change()
