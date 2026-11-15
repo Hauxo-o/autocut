@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import duck, render, settings
+from .errors import explain
 from .i18n import tr
 from .mediacache import PEAK_RATE, get_cache
 from .project import src_at
@@ -173,7 +174,7 @@ class AutoMixWorker(QThread):
         except InterruptedError:
             self.failed.emit("")
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 class MeasureWorker(QThread):
@@ -198,7 +199,7 @@ class MeasureWorker(QThread):
         except InterruptedError:
             self.failed.emit("")
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 class AudioPage(QWidget):

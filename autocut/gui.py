@@ -22,6 +22,7 @@ from .project import MIN_DUR, Clip
 from .export import export_xml, project_dir, unique_path
 from .ffmpeg_tools import ENV_HOP, audio_envelope, probe
 from . import i18n, presets, settings, theme
+from .errors import explain
 from .i18n import tr
 from . import projects
 from .dialogs import HelpDialog, OptionsDialog, WelcomeDialog
@@ -50,7 +51,7 @@ class EnvWorker(QThread):
         try:
             self.done.emit(self.idx, audio_envelope(self.path, self.idx))
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(tr("st.analyse.fail", n=self.idx + 1, err=e))
+            self.failed.emit(tr("st.analyse.fail", n=self.idx + 1, err=explain(e).split("\n")[0]))
 
 
 class ExportWorker(QThread):
@@ -67,7 +68,7 @@ class ExportWorker(QThread):
             export_xml(*self.args, progress=self.progress.emit)
             self.done.emit(self.args[3])
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 # ---------------------------------------------------------------- video (avec teinte rouge possible)
@@ -93,7 +94,7 @@ class Mp4Worker(QThread):
         except InterruptedError:
             self.failed.emit("")
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 class VideoView(QGraphicsView):
@@ -623,6 +624,11 @@ class MainWindow(QMainWindow):
         for w in (self.rb_mark, self.rb_remove, self.chk_sep, self.btn_export, self.btn_mp4):
             w.hide()                                      # les exports XML / MP4 se font maintenant depuis le Montage
         v4.addWidget(self.btn_send)
+        self.btn_clear = r(QPushButton(), "clr.cut.btn")
+        r(self.btn_clear, "tip.clr.cut", "setToolTip")
+        self.btn_clear.setStyleSheet("padding: 8px 14px;")
+        self.btn_clear.clicked.connect(self.clear_cut_tab)
+        v4.addWidget(self.btn_clear)
         rv.addWidget(g4)
 
         scroll = QScrollArea()
@@ -991,7 +997,7 @@ class MainWindow(QMainWindow):
             os.makedirs(os.path.dirname(p.path), exist_ok=True)
             p.save(p.path)
         except OSError as e:
-            QMessageBox.warning(self, tr("dlg.err.title"), str(e))
+            QMessageBox.warning(self, tr("dlg.err.title"), explain(e))
             p.path = ""
             return False
         self._update_title()
@@ -1212,7 +1218,7 @@ class MainWindow(QMainWindow):
         try:
             media = probe(path)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, tr("dlg.err.title"), tr("dlg.err.read", err=e))
+            QMessageBox.critical(self, tr("dlg.err.title"), tr("dlg.err.read", err=explain(e)))
             return
         if not media["audio"]:
             QMessageBox.warning(self, tr("dlg.nosound.title"), tr("dlg.nosound"))
@@ -1244,6 +1250,35 @@ class MainWindow(QMainWindow):
             self.editor.project.source = media["path"]
         self._update_title()
         self.redetect()
+
+    def clear_cut_tab(self):
+        """Supprime tout ce qu'il y a dans l'onglet Couper les silences (la video ouverte et ses coupes), apres confirmation.
+        La video d'origine n'est jamais touchee."""
+        if not self.media:
+            return
+        if not self._confirm(tr("clr.cut.title"), tr("clr.cut.ask", name=self.media["name"]), tr("btn.delete")):
+            return
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.media, self.pass_rev, self._auto_sent = None, None, None
+        self.envs.clear()
+        self.cuts_by_mode = {"dead": [], "classic": []}
+        self.done = []
+        self.cuts, self.sel, self.preview = [], -1, None
+        self.undo_stack = {"dead": [], "classic": []}
+        self.redo_stack = {"dead": [], "classic": []}
+        self.wave.set_done([])
+        self.wave.env = None
+        self.wave.set_data(None, ENV_HOP, 1.0, 30.0)
+        self.wave.set_cuts([])
+        self.pos_slider.setRange(0, 0)
+        for b in (self.btn_export, self.btn_mp4, self.btn_send):
+            b.setEnabled(False)
+        self._update_undo_buttons()
+        self._update_pass_ui()
+        self._update_file_label()
+        self._update_title()
+        self.status(tr("clr.cut.done"))
 
     def _apply_preview_track(self, *_):
         if not self.media:

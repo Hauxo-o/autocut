@@ -68,6 +68,8 @@ class TimelineWidget(QWidget):
         self.scroll = 0.0                # temps affiche tout a gauche (s)
         self.voff = 0                    # decalage vertical des pistes (px)
         self.playhead = 0.0
+        self.picked = set()              # selection multiple (Ctrl+clic, rectangle) : identifiants des elements
+        self.band = None                 # rectangle de selection en cours (x0, y0, x1, y1)
         self.selected = None             # Clip
         self._drag = None
         self._cache = None               # dessin de tout sauf la tete de lecture (refait seulement si besoin)
@@ -253,7 +255,34 @@ class TimelineWidget(QWidget):
         pps = max(1.0, self.width() - LABEL_W - 2 * PAD_PX) / total
         return -PAD_PX / pps, total + PAD_PX / pps
 
+    @property
+    def selected(self):
+        return self._selected
+
+    @selected.setter
+    def selected(self, clip):
+        self._selected = clip
+        if clip is None:
+            self.picked = set()
+
+    def selection(self):
+        """Tous les elements choisis (un seul, ou plusieurs avec Ctrl+clic / le rectangle)."""
+        if self.picked:
+            return [c for c in self.project.clips if c.id in self.picked]
+        return [self.selected] if self.selected is not None else []
+
+    def selection_group(self):
+        """Les elements choisis + ceux qui leur sont lies (une video et ses sons), sans doublon."""
+        seen, out = set(), []
+        for c in self.selection():
+            for m in self.project.group_of(c):
+                if m.id not in seen:
+                    seen.add(m.id)
+                    out.append(m)
+        return out
+
     def select(self, clip, emit=True):
+        self.picked = set()
         self.selected = clip
         self.invalidate()
         if emit:
@@ -379,6 +408,12 @@ class TimelineWidget(QWidget):
         if self.tool == "cut" and self.hover_x is not None and self.hover_x >= LABEL_W:
             p.setPen(QPen(col("text", 200), 1, Qt.DashLine))
             p.drawLine(QPointF(self.hover_x, RULER_H), QPointF(self.hover_x, self.height()))
+        if self.band is not None:                                # rectangle de selection
+            x0, y0, x1, y1 = self.band
+            r = QRectF(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+            p.setPen(QPen(col("accent_soft"), 1))
+            p.setBrush(col("accent", 60))
+            p.drawRect(r)
 
     def _paint_static(self, p, w, h):
         p.fillRect(0, 0, w, h, col("wave_bg"))
@@ -407,7 +442,7 @@ class TimelineWidget(QWidget):
         self._grid(p, w, h)
         # elements (dessines seulement a droite de la colonne des noms de pistes)
         p.setClipRect(QRectF(LABEL_W, RULER_H, w - LABEL_W, h - RULER_H))
-        group = {c.id for c in self.project.group_of(self.selected)} if self.selected is not None else set()
+        group = {c.id for c in self.selection_group()}
         font_main = QFont(self.font())
         p.setFont(font_main)
         for c in self.project.clips:
@@ -423,7 +458,7 @@ class TimelineWidget(QWidget):
             if silent and not lost:
                 base = QColor.fromHsv(base.hue() if base.hue() >= 0 else 0, base.saturation() // 8, int(base.value() * 0.5))
             p.setOpacity(0.5 if silent else 1.0)
-            if c is self.selected:
+            if c is self.selected or c.id in self.picked:
                 pen = QPen(col("text"), 2)
             elif c.id in group:
                 pen = QPen(col("text", 150), 1.5)
@@ -483,7 +518,7 @@ class TimelineWidget(QWidget):
                     p.setPen(_fg(base))
                     p.drawText(tr_, Qt.AlignVCenter | Qt.AlignLeft, text)
                 p.restore()
-            if c is self.selected:
+            if c is self.selected or c.id in self.picked:
                 p.setRenderHint(QPainter.Antialiasing, True)
                 p.setBrush(Qt.NoBrush)
                 p.setPen(QPen(col("accent_soft", 120), 4))                      # halo autour de l'element choisi
@@ -695,15 +730,40 @@ class TimelineWidget(QWidget):
             t = self._snap(max(0.0, self._x2t(x)), set(), SNAP_PX / self.pps)
             self.cutRequested.emit(t, c)
             return
+        ctrl = bool(e.modifiers() & Qt.ControlModifier)
         if c is None:
-            self.select(None)
-            self._drag = ("scrub",)
-            self.seekRequested.emit(max(0.0, self._x2t(max(x, LABEL_W))))
+            if y < RULER_H or x < LABEL_W:                    # dans la regle : on deplace la tete de lecture
+                self.select(None)
+                self._drag = ("scrub",)
+                self.seekRequested.emit(max(0.0, self._x2t(max(x, LABEL_W))))
+                return
+            # dans une piste, sur du vide : un simple clic deselectionne et place la tete de lecture ;
+            # en glissant, on dessine un rectangle qui selectionne les elements qu'il touche (Ctrl = on ajoute)
+            base = set(self.picked or ({self.selected.id} if self.selected is not None else set())) if ctrl else set()
+            self._drag = dict(mode="band", x0=x, y0=y, base=base, moved=False)
             return
-        self.select(c)
+        if ctrl:                                              # Ctrl+clic : ajoute / retire cet element de la selection
+            cur = set(self.picked or ({self.selected.id} if self.selected is not None else set()))
+            cur ^= {c.id}
+            if not cur:
+                self.select(None)
+            elif len(cur) == 1:
+                self.select(next(m for m in self.project.clips if m.id in cur))
+            else:
+                self.picked = cur
+                self._selected = c if c.id in cur else next(m for m in self.project.clips if m.id in cur)
+                self.invalidate()
+                self.selectionChanged.emit(self._selected)
+            return
+        if c.id in self.picked and len(self.picked) > 1:     # clic sur un element d'une selection multiple : on la garde
+            self._selected = c
+            self.invalidate()
+            self.selectionChanged.emit(c)
+        else:
+            self.select(c)
         r = self._clip_rect(c)
         mode = "trim_l" if abs(x - r.left()) <= EDGE else "trim_r" if abs(x - r.right()) <= EDGE else "move"
-        group = self.project.group_of(c)
+        group = self.selection_group() if mode == "move" else self.project.group_of(c)
         orig = {m.id: (m.start, m.duration, m.source_in(), [list(s) for s in m.segments]) for m in group}
         self._drag = dict(mode=mode, t0=self._x2t(x), s0=c.start, dur0=c.duration, in0=c.source_in(), tr0=c.track,
                           started=False, group=group, orig=orig)
@@ -742,6 +802,22 @@ class TimelineWidget(QWidget):
                 self.set_scroll(d[2] - (x - d[1]) / self.pps)
             elif d[0] == "scrub":
                 self.seekRequested.emit(max(0.0, self._x2t(max(x, LABEL_W))))
+            return
+        if d["mode"] == "band":
+            if not d["moved"] and abs(x - d["x0"]) < 4 and abs(y - d["y0"]) < 4:
+                return
+            d["moved"] = True
+            self.band = (d["x0"], d["y0"], x, y)
+            rect = QRectF(min(d["x0"], x), min(d["y0"], y), abs(x - d["x0"]), abs(y - d["y0"]))
+            hit = {m.id for m in self.project.clips if self._clip_rect(m).intersects(rect) and self._clip_rect(m).right() > LABEL_W}
+            ids = d["base"] | hit
+            if ids != self.picked:
+                self.picked = ids if len(ids) > 1 else set()
+                first = next((m for m in self.project.clips if m.id in ids), None)
+                self._selected = first
+                self.selectionChanged.emit(first)
+            self.invalidate()
+            self.update()
             return
         if d["mode"] == "resize":
             nh = int(min(MAX_ROW_H, max(MIN_ROW_H, d["h0"] + (y - d["y0"]))))
@@ -869,8 +945,16 @@ class TimelineWidget(QWidget):
         self.clipsChanged.emit()
         self.invalidate()
 
-    def mouseReleaseEvent(self, _):
+    def mouseReleaseEvent(self, e):
         d, self._drag = self._drag, None
+        if isinstance(d, dict) and d.get("mode") == "band":
+            self.band = None
+            if not d["moved"]:                                   # simple clic dans le vide : deselection + tete de lecture
+                if not d["base"]:
+                    self.select(None)
+                self.seekRequested.emit(max(0.0, self._x2t(max(d["x0"], LABEL_W))))
+            self.invalidate()
+            return
         if self.snap_t is not None:
             self.snap_t = None
             self.update()

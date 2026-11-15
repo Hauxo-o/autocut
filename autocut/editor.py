@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from . import aitools, duck, idle, ops, projects, render, settings, transcribe
 from .export import project_dir, unique_path
 from .ffmpeg_tools import _NOWIN, find_tool
+from .errors import explain
 from .i18n import tr
 from .project import (FONTS, FPS_CHOICES, MIN_DUR, RESOLUTIONS, Clip, Project, seg_index_at, seg_window, src_at,
                       track_num)
@@ -644,7 +645,7 @@ class FuncWorker(QThread):
         except InterruptedError:
             self.failed.emit("")
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 class PassWorker(QThread):
@@ -668,7 +669,7 @@ class PassWorker(QThread):
         except InterruptedError:
             self.failed.emit("")
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 class RenderWorker(QThread):
@@ -698,7 +699,7 @@ class RenderWorker(QThread):
         except InterruptedError:
             self.failed.emit("")
         except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+            self.failed.emit(explain(e))
 
 
 # ====================================================================== la page
@@ -994,6 +995,10 @@ class EditorPage(QWidget):
         self.btn_pass.clicked.connect(self.start_silence_pass)
         f3.addRow(self.btn_pass)
         f3.addRow(prow)
+        self.btn_clear = r(QPushButton(), "clr.ed.btn")
+        r(self.btn_clear, "tip.clr.ed", "setToolTip")
+        self.btn_clear.clicked.connect(self.clear_all)
+        f3.addRow(self.btn_clear)
         self.btn_export = r(QPushButton(), "ed.export")
         self.btn_export.setObjectName("primary")
         self.btn_export.setStyleSheet("padding: 11px 14px; font-size: 11pt;")
@@ -1287,6 +1292,12 @@ class EditorPage(QWidget):
         self.preview.refresh()
 
     # ------------------------------------------------------------ selection / proprietes
+    def sel_group(self):
+        """Les elements concernes par une action : toute la selection (Ctrl+clic, rectangle) et leurs lies."""
+        if self.timeline.picked:
+            return self.timeline.selection_group()
+        return self.project.group_of(self.sel) if self.sel is not None else []
+
     def _on_select(self, clip):
         self.sel = clip
         self._load_props()
@@ -1448,7 +1459,7 @@ class EditorPage(QWidget):
             try:
                 info = probe_media(path)
             except Exception as e:  # noqa: BLE001
-                QMessageBox.warning(self.win, tr("dlg.err.title"), tr("ed.err.media", err=f"{os.path.basename(path)}: {e}"))
+                QMessageBox.warning(self.win, tr("dlg.err.title"), tr("ed.err.media", err=f"{os.path.basename(path)}\n{explain(e)}"))
                 continue
             name = os.path.basename(path)
             new = []
@@ -1509,7 +1520,7 @@ class EditorPage(QWidget):
             self.ripple_delete()
             return
         self.push_undo()
-        ids = {m.id for m in self.project.group_of(self.sel)}
+        ids = {m.id for m in self.sel_group()}
         self.project.clips = [c for c in self.project.clips if c.id not in ids]
         self.sel = None
         self.timeline.selected = None
@@ -1521,7 +1532,7 @@ class EditorPage(QWidget):
         """Copie l'element choisi (et ses lies : la video avec ses sons) dans le presse-papiers du montage."""
         if self.sel is None:
             return
-        group = self.project.group_of(self.sel)
+        group = self.sel_group()
         first = min(m.start for m in group)
         self._clip_buf = [(deepcopy(m), m.start - first) for m in group]
         self.win.status(tr("ed.copied", n=len(group)))
@@ -1592,12 +1603,12 @@ class EditorPage(QWidget):
         c = self.sel
         if c is None:
             return
-        group = self.project.group_of(c)
+        group = self.sel_group()
         self.push_undo()
         first = min(m.start for m in group)
         last = max(m.end for m in group)
         start = self._group_start({m.track for m in group}, last, last - first)
-        link = Project.new_link() if len(group) > 1 else ""
+        link = Project.new_link() if len(group) > 1 and not self.timeline.picked else ""
         copies = []
         for m in group:
             n = deepcopy(m)
@@ -1620,7 +1631,7 @@ class EditorPage(QWidget):
 
     def split_at_playhead(self):
         t = self.preview.t
-        base = self.project.group_of(self.sel) if self.sel is not None else [c for c in self.project.clips if c.start < t < c.end]
+        base = self.sel_group() if self.sel is not None else [c for c in self.project.clips if c.start < t < c.end]
         self._split(t, base)
 
     def cut_at(self, t, clip):
@@ -1730,7 +1741,7 @@ class EditorPage(QWidget):
     def _idle_failed(self, msg):
         self._idle_end()
         if msg:
-            QMessageBox.warning(self.win, tr("idle.title"), msg[-300:])
+            QMessageBox.warning(self.win, tr("idle.title"), msg)
 
     def _idle_done(self, ranges):
         self._idle_end()
@@ -1800,7 +1811,7 @@ class EditorPage(QWidget):
         if self.sel is None:
             return
         t = self.preview.t
-        group = [m for m in self.project.group_of(self.sel) if m.start + MIN_DUR <= t <= m.end - MIN_DUR]
+        group = [m for m in self.sel_group() if m.start + MIN_DUR <= t <= m.end - MIN_DUR]
         if not group:
             return
         self.push_undo()
@@ -1825,7 +1836,7 @@ class EditorPage(QWidget):
         """Supprime l'element (et ses lies) puis decale la suite vers la gauche pour boucher le trou."""
         if self.sel is None:
             return
-        group = self.project.group_of(self.sel)
+        group = self.sel_group()
         a, b = min(m.start for m in group), max(m.end for m in group)
         ids = {m.id for m in group}
         tracks = None if self.project.linked else {m.track for m in group}
@@ -1876,6 +1887,16 @@ class EditorPage(QWidget):
         self._after_project_change()
         self.timeline.fit_all()
 
+    def clear_all(self):
+        """Vide tout le montage (elements et reglages de pistes), apres confirmation. Ctrl+Z revient en arriere."""
+        if not self.project.clips:
+            return
+        if not self.win._confirm(tr("clr.ed.title"), tr("clr.ed.ask", n=len(self.project.clips)), tr("btn.delete")):
+            return
+        self.preview.pause()
+        self.replace_all([])
+        self.win.status(tr("clr.ed.done"))
+
     def replace_all(self, clips):
         """Remplace TOUT le contenu du montage (elements et reglages de pistes) par ces elements. Ctrl+Z revient en arriere."""
         self.push_undo()
@@ -1924,7 +1945,7 @@ class EditorPage(QWidget):
             os.makedirs(os.path.dirname(p.path), exist_ok=True)
             p.save(p.path)
         except OSError as e:
-            QMessageBox.warning(self.win, tr("dlg.err.title"), str(e))
+            QMessageBox.warning(self.win, tr("dlg.err.title"), explain(e))
             return
         self._dirty = False
         self.clear_autosave()
@@ -2012,7 +2033,7 @@ class EditorPage(QWidget):
             self.push_undo()
             self.project.load(path)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self.win, tr("dlg.err.title"), str(e))
+            QMessageBox.warning(self.win, tr("dlg.err.title"), explain(e))
             return False
         self.project.path = ""                                  # ce n'est pas un fichier de projet : "Enregistrer" demandera un nom
         self.sel = None
@@ -2034,7 +2055,7 @@ class EditorPage(QWidget):
             self.push_undo()
             self.project.load(path)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self.win, tr("dlg.err.title"), str(e))
+            QMessageBox.warning(self.win, tr("dlg.err.title"), explain(e))
             return
         self.sel = None
         self.timeline.selected = None
@@ -2132,7 +2153,7 @@ class EditorPage(QWidget):
     def _tr_failed(self, msg):
         self._tr_end()
         if msg:
-            QMessageBox.warning(self.win, tr("tr.title"), tr("tr.err", err=msg[-300:]))
+            QMessageBox.warning(self.win, tr("tr.title"), msg)
 
     def _tr_show(self, matches, kind):
         self._tr_matches, self._tr_kind = matches, kind
@@ -2198,7 +2219,7 @@ class EditorPage(QWidget):
         w = FuncWorker(lambda prog, stop: aitools.export_for_ai(proj, folder))
         self._ai_worker = w
         w.done.connect(lambda res: (self.win.task_end(), self._ai_done(folder, res)))
-        w.failed.connect(lambda m: (self.win.task_end(), QMessageBox.warning(self.win, tr("tr.title"), m[-300:])))
+        w.failed.connect(lambda m: (self.win.task_end(), QMessageBox.warning(self.win, tr("tr.title"), m)))
         self.win.task_begin(tr("tr.ai.running"), indeterminate=True)
         w.start()
 
@@ -2227,7 +2248,7 @@ class EditorPage(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(xml)
         except OSError as e:
-            QMessageBox.warning(self.win, tr("dlg.err.title"), str(e))
+            QMessageBox.warning(self.win, tr("dlg.err.title"), explain(e))
             return
         msg = tr("ed.xml.done", path=path) + (tr("ed.xml.skipped", n=skipped) if skipped else "")
         self.win.status(tr("st.export.done", path=path))
@@ -2253,7 +2274,7 @@ class EditorPage(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(xml)
         except OSError as e:
-            QMessageBox.warning(self.win, tr("dlg.err.title"), str(e))
+            QMessageBox.warning(self.win, tr("dlg.err.title"), explain(e))
             return
         msg = tr("ed.fcpxml.done", path=path) + (tr("ed.xml.skipped", n=skipped) if skipped else "")
         self.win.status(tr("st.export.done", path=path))

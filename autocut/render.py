@@ -10,6 +10,7 @@ import time
 
 from . import duck
 from .ffmpeg_tools import _NOWIN, find_tool
+from .errors import UserError, explain
 from .i18n import tr
 from .project import FONTS, track_num
 
@@ -34,18 +35,8 @@ def _log_error(cmd, err):
 
 
 def explain_error(err):
-    """Message simple (dans la langue de l'appli) pour une erreur FFmpeg ou systeme, avec le detail technique a la fin."""
-    low = err.lower()
-    if "no such file" in low or "does not exist" in low or "error opening input" in low:
-        key = "exp.err.missing"
-    elif "permission denied" in low or "access is denied" in low or "winerror 5" in low or "winerror 32" in low:
-        key = "exp.err.locked"
-    elif "no space left" in low or "disk full" in low:
-        key = "exp.err.space"
-    else:
-        key = "exp.err.generic"
-    last = [ln for ln in err.strip().splitlines() if ln.strip()][-3:]
-    return tr(key, log=log_path()) + "\n\n" + "\n".join(last)[-500:]
+    """Message clair pour une erreur FFmpeg (voir errors.explain)."""
+    return explain(err)
 
 
 def preflight(project, out_path):
@@ -53,11 +44,11 @@ def preflight(project, out_path):
     disque presque plein, ecriture sur un fichier utilise dans le montage. Leve RuntimeError avec un message clair."""
     missing = sorted({os.path.basename(c.path) for c in project.clips if c.path and c.kind != "text" and not os.path.isfile(c.path)})
     if missing:
-        raise RuntimeError(tr("exp.err.missing.files", files=", ".join(missing[:6]) + (" ..." if len(missing) > 6 else "")))
+        raise UserError(tr("exp.err.missing.files", files=", ".join(missing[:6]) + (" ..." if len(missing) > 6 else "")))
     out_abs = os.path.abspath(out_path)
     for c in project.clips:
         if c.path and os.path.abspath(c.path) == out_abs:
-            raise RuntimeError(tr("exp.err.overwrite", name=os.path.basename(out_abs)))
+            raise UserError(tr("exp.err.overwrite", name=os.path.basename(out_abs)))
     folder = os.path.dirname(out_abs)
     try:
         os.makedirs(folder, exist_ok=True)
@@ -66,12 +57,12 @@ def preflight(project, out_path):
             f.write("ok")
         os.remove(probe_file)
     except OSError as e:
-        raise RuntimeError(tr("exp.err.folder", folder=folder, err=str(e))) from e
+        raise UserError(tr("exp.err.folder", folder=folder, err=str(e))) from e
     try:
         free = shutil.disk_usage(folder).free
         need = int(project.duration() * 2_000_000)           # estimation grossiere : environ 16 Mbit/s
         if free < need:
-            raise RuntimeError(tr("exp.err.space.est", free=f"{free / 1e9:.1f}", need=f"{need / 1e9:.1f}"))
+            raise UserError(tr("exp.err.space.est", free=f"{free / 1e9:.1f}", need=f"{need / 1e9:.1f}"))
     except OSError:
         pass
 
@@ -359,7 +350,7 @@ def _run_ffmpeg(cmd, work, total, progress, should_stop):
         err = ef.read()
     if code != 0:
         _log_error(cmd, err)
-        raise RuntimeError(explain_error(err or "ffmpeg"))
+        raise UserError(explain_error(err or "ffmpeg"))
     return err
 
 
@@ -470,7 +461,7 @@ def render(project, out_path, progress=None, should_stop=None, stems=False):
         try:
             os.replace(part, out_path)
         except OSError as e:
-            raise RuntimeError(explain_error(str(e) + " permission denied")) from e
+            raise UserError(explain_error(str(e) + " permission denied")) from e
         if progress:
             progress(1.0)
     finally:

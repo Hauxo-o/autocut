@@ -66,3 +66,8 @@ Sous chaque fader, choisis le rôle de la piste (Voix, Jeu, Musique ; par défau
 - **Couper les silences** : un seul export, « Envoyer dans le montage ». Cela **remplace** le contenu du Montage (confirmation demandée ; Ctrl+Z dans le Montage revient en arrière).
 - **Montage** : exporter en **MP4** (option « multipiste » : flux 1 = mixage complet, puis une piste audio par piste du montage, avec ducking et volumes), en **XML** (DaVinci/Final Cut 7) ou en **FCPXML** ; ou **transférer** le montage vers « Couper les silences » (remplace ce qui y est ouvert, confirmation demandée) puis « Appliquer au montage » (confirmation aussi).
 - En cas d'échec d'export, le détail technique est écrit dans `%APPDATA%\AutoCut\export_error.log`. L'export vérifie avant de commencer (fichiers présents, dossier inscriptible, place sur le disque, pas d'écrasement d'un fichier source) et écrit d'abord dans un fichier `.part` renommé à la fin.
+
+### Sélection, suppression et erreurs
+- **Montage** : clic gauche dans une piste (sur du vide) et glisser = rectangle de sélection (Ctrl = on ajoute à la sélection) ; **Ctrl+clic** sur un élément = l'ajouter / le retirer. Déplacer, supprimer, copier, dupliquer, couper à la tête de lecture agissent sur tous les éléments choisis. Un simple clic dans le vide désélectionne et place la tête de lecture.
+- **Tout supprimer…** (dans « Couper les silences » et dans le Montage) vide l'onglet après confirmation (jamais les vidéos d'origine ; Ctrl+Z dans le Montage).
+- **Erreurs** : chaque message dit le PROBLÈME, QUE FAIRE, puis le détail technique en bas (`autocut/errors.py`). Le détail complet est dans `%APPDATA%\AutoCut\export_error.log`.

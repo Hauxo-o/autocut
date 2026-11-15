@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import i18n, projects, settings, theme
+from .errors import explain
 from .i18n import tr
 from .theme import FONT_FAMILIES, col
 
@@ -538,7 +539,7 @@ class WelcomeDialog(QDialog):
         try:
             projects.duplicate(root, path, name)
         except (OSError, ValueError) as e:
-            QMessageBox.warning(self, tr("home.duplicate"), str(e))
+            QMessageBox.warning(self, tr("home.duplicate"), explain(e))
             return
         self._fill()
 
