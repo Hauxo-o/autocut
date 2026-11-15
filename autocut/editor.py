@@ -886,6 +886,10 @@ class EditorPage(QWidget):
         for b in (self.btn_split, self.btn_dup, self.btn_del):
             brow.addWidget(b)
         v2.addLayout(brow)
+        self.btn_merge = r(QPushButton(), "ed.merge")
+        r(self.btn_merge, "tip.merge", "setToolTip")
+        self.btn_merge.clicked.connect(self.merge_selected)
+        v2.addWidget(self.btn_merge)
         crow = QHBoxLayout()
         self.btn_copy = r(QPushButton(), "ed.copy")
         self.btn_cutclip = r(QPushButton(), "ed.cutclip")
@@ -1075,6 +1079,7 @@ class EditorPage(QWidget):
                         (Qt.Key_Q, lambda: self.trim_to_playhead("l")), (Qt.Key_W, lambda: self.trim_to_playhead("r")),
                         ("Shift+Delete", self.ripple_delete), (Qt.Key_Z, self.fit_selection),
                         ("Ctrl+C", self.copy_selected), ("Ctrl+X", self.cut_selected), ("Ctrl+V", self.paste_clips),
+                        ("Ctrl+G", self.merge_selected),
                         (Qt.Key_R, self.btn_ripple.toggle), (Qt.Key_G, self.close_gaps),
                         (Qt.Key_PageUp, lambda: self.goto_edge(-1)), (Qt.Key_PageDown, lambda: self.goto_edge(1))):
             QShortcut(QKeySequence(key), self, activated=fn, context=Qt.WidgetWithChildrenShortcut)
@@ -1598,6 +1603,28 @@ class EditorPage(QWidget):
         grace aux clips de ce fichier, puis retires de toutes les pistes. Renvoie les secondes retirees."""
         merged = ops.source_to_timeline(self.project, path, ranges)
         return self.apply_cut_ranges(merged) if merged else 0.0
+
+    def merge_selected(self):
+        """Ctrl+G : fusionne les elements choisis qui se suivent (meme piste, meme fichier) en un seul element sur la
+        timeline. Rien ne change a l'image ni au son. Ctrl+Z annule."""
+        sel = self.sel_group()
+        if len(sel) < 2:
+            self.win.status(tr("merge.need"))
+            return
+        trial = deepcopy(self.project)
+        by_id = {c.id for c in sel}
+        n_ok, n_removed, _skip = ops.merge_clips(trial, [c for c in trial.clips if c.id in by_id])
+        if not n_removed:
+            self.win.status(tr("merge.none"))
+            return
+        self.push_undo()
+        keep = None
+        n_ok, n_removed, skipped = ops.merge_clips(self.project, [c for c in self.project.clips if c.id in by_id])
+        self.sel = None
+        self.timeline.selected = None
+        self._after_project_change()
+        self._load_props()
+        self.win.status(tr("merge.done", n=n_removed + n_ok, m=n_ok) + (tr("merge.skipped", k=skipped) if skipped else ""))
 
     def duplicate_selected(self):
         c = self.sel

@@ -118,3 +118,54 @@ def timeline_to_source(project, path, t):
                     return s0 + (t - acc)
                 acc += e0 - s0
     return None
+
+
+# ---------------------------------------------------------------- fusionner des elements
+def _merge_key(c):
+    return (c.kind, c.track, c.path, c.audio_index, c.volume_db, c.mute_audio, c.has_audio, c.scale, c.pos_x, c.pos_y)
+
+
+def merge_clips(project, clips, tol=0.02):
+    """Fusionne des elements video / son qui se suivent bout a bout (meme piste, meme fichier, memes reglages) en UN seul
+    element compose (ses passages = ceux des elements fusionnes). Le rendu, le son et la forme d'onde ne changent pas :
+    seul le nombre d'elements sur la timeline diminue.
+    Renvoie (nombre d'elements obtenus, nombre d'elements supprimes, nombre d'elements non fusionnables) ;
+    le dernier = elements choisis qui n'ont pas de voisin a fusionner (autre fichier, autre piste, trou entre eux...)."""
+    groups = {}
+    for c in clips:
+        if c.kind in ("video", "audio") and c.path:
+            groups.setdefault(_merge_key(c), []).append(c)
+    merged, removed, touched = 0, 0, set()
+    for key, items in groups.items():
+        items.sort(key=lambda c: c.start)
+        runs, cur = [], [items[0]]
+        for c in items[1:]:
+            if abs(c.start - cur[-1].end) <= tol:
+                cur.append(c)
+            else:
+                runs.append(cur)
+                cur = [c]
+        runs.append(cur)
+        for run in runs:
+            if len(run) < 2:
+                continue
+            segs = []
+            for c in run:
+                for a, b in (c.segments or [[c.src_in, c.src_in + c.duration]]):
+                    if segs and abs(segs[-1][1] - a) <= 1e-3:            # deux passages qui se touchent dans le fichier : un seul
+                        segs[-1][1] = b
+                    else:
+                        segs.append([a, b])
+            first = run[0]
+            first.duration = sum(b - a for a, b in segs)
+            if len(segs) == 1:
+                first.segments, first.src_in = [], segs[0][0]
+            else:
+                first.segments, first.src_in = segs, segs[0][0]
+            ids = {c.id for c in run[1:]}
+            project.clips = [c for c in project.clips if c.id not in ids]
+            merged += 1
+            removed += len(run) - 1
+            touched |= {c.id for c in run}
+    skipped = sum(1 for c in clips if c.id not in touched)
+    return merged, removed, skipped

@@ -71,3 +71,6 @@ Sous chaque fader, choisis le rôle de la piste (Voix, Jeu, Musique ; par défau
 - **Montage** : clic gauche dans une piste (sur du vide) et glisser = rectangle de sélection (Ctrl = on ajoute à la sélection) ; **Ctrl+clic** sur un élément = l'ajouter / le retirer. Déplacer, supprimer, copier, dupliquer, couper à la tête de lecture agissent sur tous les éléments choisis. Un simple clic dans le vide désélectionne et place la tête de lecture.
 - **Tout supprimer…** (dans « Couper les silences » et dans le Montage) vide l'onglet après confirmation (jamais les vidéos d'origine ; Ctrl+Z dans le Montage).
 - **Erreurs** : chaque message dit le PROBLÈME, QUE FAIRE, puis le détail technique en bas (`autocut/errors.py`). Le détail complet est dans `%APPDATA%\AutoCut\export_error.log`.
+
+### Fusionner des éléments (Ctrl+G)
+Sélectionne plusieurs éléments (rectangle de sélection ou Ctrl+clic) puis **Ctrl+G** (ou le bouton « Fusionner les éléments choisis ») : ceux qui se suivent sans trou, sur la même piste et depuis le même fichier, deviennent un seul élément sur la timeline. L'image et le son ne changent pas ; Ctrl+Z annule (`ops.merge_clips`).
