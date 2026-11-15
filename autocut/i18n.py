@@ -1014,6 +1014,7 @@ _T = {
     "group.done": ("{n} éléments groupés : ils bougent ensemble.", "{n} items grouped: they move together.", "{n} 個の要素をグループ化しました。一緒に動きます。", "{n} elementos agrupados: se mueven juntos.", "{n} Elemente gruppiert: Sie bewegen sich gemeinsam."),
     "group.undone": ("{n} éléments dégroupés.", "{n} items ungrouped.", "{n} 個の要素のグループを解除しました。", "{n} elementos desagrupados.", "{n} Elemente getrennt."),
     "group.none": ("Aucun groupe dans la sélection.", "No group in the selection.", "選択範囲にグループはありません。", "No hay ningún grupo en la selección.", "Keine Gruppe in der Auswahl."),
+    "group.info": ("⛓ Cet élément fait partie d'un groupe de {n} éléments (même couleur sur la timeline). Les éléments du groupe bougent ensemble.", "⛓ This item is part of a group of {n} items (same colour on the timeline). Group items move together.", "⛓ この要素は {n} 個の要素のグループに属しています（タイムライン上で同じ色）。グループの要素は一緒に動きます。", "⛓ Este elemento forma parte de un grupo de {n} elementos (mismo color en la línea de tiempo). Los elementos del grupo se mueven juntos.", "⛓ Dieses Element gehört zu einer Gruppe aus {n} Elementen (gleiche Farbe auf der Timeline). Gruppenelemente bewegen sich gemeinsam."),
 }
 
 STR = {c: {k: v[i] for k, v in _T.items()} for i, c in enumerate(CODES)}

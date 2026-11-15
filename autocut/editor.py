@@ -886,6 +886,10 @@ class EditorPage(QWidget):
         for b in (self.btn_split, self.btn_dup, self.btn_del):
             brow.addWidget(b)
         v2.addLayout(brow)
+        self.lbl_group = QLabel()
+        self.lbl_group.setWordWrap(True)
+        self.lbl_group.hide()
+        v2.addWidget(self.lbl_group)
         grow = QHBoxLayout()
         self.btn_group = r(QPushButton(), "ed.group")
         r(self.btn_group, "tip.group", "setToolTip")
@@ -1328,6 +1332,13 @@ class EditorPage(QWidget):
         for b in (self.btn_split, self.btn_dup, self.btn_del):
             b.setEnabled(c is not None)
         self.btn_unlink.setVisible(c is not None and len(self.project.group_of(c)) > 1)
+        g = [m for m in self.project.clips if c is not None and c.group and m.group == c.group]
+        self.lbl_group.setVisible(bool(g))
+        if g:
+            from .timeline import group_color
+            self.lbl_group.setText(tr("group.info", n=len(g)))
+            self.lbl_group.setStyleSheet(f"color:{group_color(c.group).name()}; font-weight:bold;")
+        self.btn_ungroup.setEnabled(bool(g))
         if c is not None:
             for lab, w_, kinds in self._rows:
                 on = c.kind in kinds

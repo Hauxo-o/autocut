@@ -39,6 +39,18 @@ def clip_color(c):
     return {"video": col("accent"), "image": col("accent_soft"), "text": col("handle"), "audio": col("wave")}[c.kind]
 
 
+GROUP_COLORS = ("#f59e0b", "#10b981", "#ec4899", "#8b5cf6", "#06b6d4", "#ef4444", "#84cc16", "#f97316")
+
+
+def group_color(gid):
+    """Une couleur par groupe (stable : meme groupe = meme couleur)."""
+    try:
+        i = int(gid[:6], 16)
+    except ValueError:
+        i = sum(map(ord, gid))
+    return QColor(GROUP_COLORS[i % len(GROUP_COLORS)])
+
+
 def src_times(c, ts):
     """Instants du FICHIER SOURCE pour un tableau d'instants de la timeline (version rapide de project.src_at)."""
     local = ts - c.start
@@ -489,6 +501,24 @@ class TimelineWidget(QWidget):
                 p.setClipPath(hp, Qt.IntersectClip)
                 p.fillRect(r, QBrush(QColor(0, 0, 0, 110), Qt.BDiagPattern))
                 p.restore()
+            if c.group:                                       # GROUPE : contour + bandeau de la couleur du groupe + pastille
+                gc = group_color(c.group)
+                p.setRenderHint(QPainter.Antialiasing, True)
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(gc, 2.5))
+                p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 5, 5)
+                if r.width() > 12:
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(gc)
+                    p.drawRect(QRectF(r.left() + 3, r.top() + 2, max(2.0, r.width() - 6), 5))
+                    if r.width() > 34 and r.height() >= 22:
+                        badge = QRectF(r.left() + 6, r.top() + 9, 20, 15)
+                        p.drawRoundedRect(badge, 4, 4)
+                        p.setPen(_fg(gc))
+                        p.setFont(small)
+                        p.drawText(badge, Qt.AlignCenter, "⛓")
+                        p.setFont(font_main)
+                p.setRenderHint(QPainter.Antialiasing, False)
             if len(c.segments) > 1 and r.width() > 30:        # reperes aux endroits des coupes
                 p.setPen(QPen(col("wave_bg", 200) if not shown else QColor(255, 255, 255, 190), 1))
                 acc = 0.0
@@ -502,12 +532,13 @@ class TimelineWidget(QWidget):
                 p.setClipRect(r.adjusted(4, 0, -4, 0).intersected(QRectF(LABEL_W, 0, w, h)))
                 icon = "⚠ " if lost else ("⊘ " if silent else {"video": "▶ ", "image": "▣ ", "text": "T ", "audio": "♪ "}[c.kind])
                 extra = f"  ({len(c.segments)} ✂)" if len(c.segments) > 1 else ""
-                if c.group:
-                    extra += "  ⛓"                                   # fait partie d'un groupe (Ctrl+G)
                 if silent and not lost:
                     extra += "  (" + tr("tl.muted") + ")"
                 text = icon + c.label() + extra
                 tr_ = r.adjusted(7, 0, -4, 0)
+                if c.group and r.height() >= 22:
+                    tr_ = r.adjusted(7, 9, -4, 0) if r.height() >= 40 else r.adjusted(30, 4, -4, 0)
+                    text = text.lstrip()
                 if shown:                                       # texte lisible par-dessus une image / une onde
                     fm = p.fontMetrics()
                     tw = min(fm.horizontalAdvance(text) + 8, tr_.width())
