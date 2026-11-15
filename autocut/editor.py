@@ -886,6 +886,16 @@ class EditorPage(QWidget):
         for b in (self.btn_split, self.btn_dup, self.btn_del):
             brow.addWidget(b)
         v2.addLayout(brow)
+        grow = QHBoxLayout()
+        self.btn_group = r(QPushButton(), "ed.group")
+        r(self.btn_group, "tip.group", "setToolTip")
+        self.btn_group.clicked.connect(self.group_selected)
+        self.btn_ungroup = r(QPushButton(), "ed.ungroup")
+        r(self.btn_ungroup, "tip.ungroup", "setToolTip")
+        self.btn_ungroup.clicked.connect(self.ungroup_selected)
+        grow.addWidget(self.btn_group)
+        grow.addWidget(self.btn_ungroup)
+        v2.addLayout(grow)
         self.btn_merge = r(QPushButton(), "ed.merge")
         r(self.btn_merge, "tip.merge", "setToolTip")
         self.btn_merge.clicked.connect(self.merge_selected)
@@ -1079,7 +1089,7 @@ class EditorPage(QWidget):
                         (Qt.Key_Q, lambda: self.trim_to_playhead("l")), (Qt.Key_W, lambda: self.trim_to_playhead("r")),
                         ("Shift+Delete", self.ripple_delete), (Qt.Key_Z, self.fit_selection),
                         ("Ctrl+C", self.copy_selected), ("Ctrl+X", self.cut_selected), ("Ctrl+V", self.paste_clips),
-                        ("Ctrl+G", self.merge_selected),
+                        ("Ctrl+G", self.group_selected), ("Ctrl+Shift+G", self.ungroup_selected),
                         (Qt.Key_R, self.btn_ripple.toggle), (Qt.Key_G, self.close_gaps),
                         (Qt.Key_PageUp, lambda: self.goto_edge(-1)), (Qt.Key_PageDown, lambda: self.goto_edge(1))):
             QShortcut(QKeySequence(key), self, activated=fn, context=Qt.WidgetWithChildrenShortcut)
@@ -1301,7 +1311,7 @@ class EditorPage(QWidget):
         """Les elements concernes par une action : toute la selection (Ctrl+clic, rectangle) et leurs lies."""
         if self.timeline.picked:
             return self.timeline.selection_group()
-        return self.project.group_of(self.sel) if self.sel is not None else []
+        return self.project.full_group(self.sel) if self.sel is not None else []
 
     def _on_select(self, clip):
         self.sel = clip
@@ -1567,11 +1577,14 @@ class EditorPage(QWidget):
         else:
             start = self._group_start({m.track for m, _ in self._clip_buf}, t, dur)
         link = Project.new_link() if len(self._clip_buf) > 1 else ""
+        gmap = {}
         copies = []
         for m, off in self._clip_buf:
             n = deepcopy(m)
             n.id = Clip("text", "V1", 0, 1).id
             n.start, n.link, n.origin = start + off, link, ""
+            if m.group:
+                n.group = gmap.setdefault(m.group, Project.new_link())
             copies.append(n)
         self.project.clips.extend(copies)
         self._select_new(copies[0])
@@ -1603,6 +1616,35 @@ class EditorPage(QWidget):
         grace aux clips de ce fichier, puis retires de toutes les pistes. Renvoie les secondes retirees."""
         merged = ops.source_to_timeline(self.project, path, ranges)
         return self.apply_cut_ranges(merged) if merged else 0.0
+
+    def group_selected(self):
+        """Ctrl+G : groupe les elements choisis. Instantane : rien n'est recalcule ni recree. Le groupe se deplace, se copie
+        et se supprime d'un bloc (clique sur l'un de ses elements). Ctrl+Maj+G degroupe. Ctrl+Z annule."""
+        sel = self.sel_group()
+        if len(sel) < 2:
+            self.win.status(tr("group.need"))
+            return
+        self.push_undo()
+        gid = Project.new_link()
+        for c in sel:
+            c.group = gid
+        self.timeline.invalidate()
+        self._after_project_change()
+        self._load_props(keep_focus=True)
+        self.win.status(tr("group.done", n=len(sel)))
+
+    def ungroup_selected(self):
+        sel = [c for c in self.sel_group() if c.group]
+        if not sel:
+            self.win.status(tr("group.none"))
+            return
+        self.push_undo()
+        for c in sel:
+            c.group = ""
+        self.timeline.invalidate()
+        self._after_project_change()
+        self._load_props(keep_focus=True)
+        self.win.status(tr("group.undone", n=len(sel)))
 
     def merge_selected(self):
         """Ctrl+G : fusionne les elements choisis qui se suivent sur une meme piste en UN seul element.
@@ -1695,12 +1737,15 @@ class EditorPage(QWidget):
         last = max(m.end for m in group)
         start = self._group_start({m.track for m in group}, last, last - first)
         link = Project.new_link() if len(group) > 1 and not self.timeline.picked else ""
+        gmap = {}
         copies = []
         for m in group:
             n = deepcopy(m)
             n.id = Clip("text", "V1", 0, 1).id
             n.start = m.start - first + start
             n.link = link
+            if m.group:
+                n.group = gmap.setdefault(m.group, Project.new_link())
             n.origin = ""                                # une copie ne disparait pas quand on renvoie les coupes
             copies.append(n)
         self.project.clips.extend(copies)

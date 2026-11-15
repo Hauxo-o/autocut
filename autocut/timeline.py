@@ -275,7 +275,7 @@ class TimelineWidget(QWidget):
         """Les elements choisis + ceux qui leur sont lies (une video et ses sons), sans doublon."""
         seen, out = set(), []
         for c in self.selection():
-            for m in self.project.group_of(c):
+            for m in self.project.full_group(c):
                 if m.id not in seen:
                     seen.add(m.id)
                     out.append(m)
@@ -502,6 +502,8 @@ class TimelineWidget(QWidget):
                 p.setClipRect(r.adjusted(4, 0, -4, 0).intersected(QRectF(LABEL_W, 0, w, h)))
                 icon = "⚠ " if lost else ("⊘ " if silent else {"video": "▶ ", "image": "▣ ", "text": "T ", "audio": "♪ "}[c.kind])
                 extra = f"  ({len(c.segments)} ✂)" if len(c.segments) > 1 else ""
+                if c.group:
+                    extra += "  ⛓"                                   # fait partie d'un groupe (Ctrl+G)
                 if silent and not lost:
                     extra += "  (" + tr("tl.muted") + ")"
                 text = icon + c.label() + extra

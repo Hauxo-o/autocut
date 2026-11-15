@@ -107,6 +107,7 @@ class Clip:
     scale: float = 100.0            # % (image / video)
     segments: list = field(default_factory=list)   # clip compose : [[debut_source_s, fin_source_s], ...] (les passages gardes d'un fichier, comme dans l'onglet Couper)
     link: str = ""                  # elements lies (une video et ses sons) : ils se deplacent ensemble
+    group: str = ""                 # elements groupes (Ctrl+G) : ils se deplacent / se copient / se suppriment ensemble
     origin: str = ""                # d'ou vient l'element ("cut:<fichier>" = envoye depuis l'onglet Couper)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
 
@@ -229,6 +230,15 @@ class Project:
         if not clip.link or not self.linked:
             return [clip]
         return [c for c in self.clips if c.link == clip.link] or [clip]
+
+    def full_group(self, clip):
+        """Tout ce qui bouge avec cet element : ses lies (video + sons) ET ceux de son groupe (Ctrl+G)."""
+        ids = {m.id for m in self.group_of(clip)}
+        if clip.group:
+            for c in self.clips:
+                if c.group == clip.group:
+                    ids |= {m.id for m in self.group_of(c)}
+        return [c for c in self.clips if c.id in ids]
 
     @staticmethod
     def new_link():
